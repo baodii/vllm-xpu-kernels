@@ -18,13 +18,13 @@
 
 #include "./collective/chunk_prefill_scheduler.hpp"
 #include "./collective/chunk_prefill_epilogue.hpp"
-#include "chunk_prefill_kernel.hpp"
+#include "paged_decode_kernel.hpp"
 
 #include "fmha_utils.hpp"
 
 using namespace cute;
 
-struct chunk_prefill_args_t {
+struct paged_decode_args_t {
   void* query;
   void* key;
   void* value;
@@ -54,7 +54,7 @@ struct chunk_prefill_args_t {
 };
 
 template <class FMHAKernel, bool isVarLen>
-struct KernelLauncher {
+struct DecodeKernelLauncher {
   using StrideQ = typename FMHAKernel::StrideQ;
   using StrideK = typename FMHAKernel::StrideK;
   using StrideV = typename FMHAKernel::StrideV;
@@ -68,8 +68,8 @@ struct KernelLauncher {
   using CollectiveMainloop = typename FMHAKernel::CollectiveMainloop;
   using ElementS = typename CollectiveMainloop::ElementS;
 
-  using ProblemShapeType = cutlass::fmha::kernel::FMHAProblemShape<isVarLen>;
-  using ProblemShapeTypeInit = cutlass::fmha::kernel::FMHAProblemShape<false>;
+  using ProblemShapeType = cutlass::fmha::kernel::DecodeProblemShape<isVarLen>;
+  using ProblemShapeTypeInit = cutlass::fmha::kernel::DecodeProblemShape<false>;
 
   /// Initialization
   StrideQ stride_Q;
@@ -77,7 +77,7 @@ struct KernelLauncher {
   StrideV stride_V;
   StrideO stride_O;
 
-  ProblemShapeType initialize(const chunk_prefill_args_t& args) {
+  ProblemShapeType initialize(const paged_decode_args_t& args) {
     ProblemShapeType shape;
     ProblemShapeTypeInit shape_init;
     auto batch = shape.batch = shape_init.batch = args.batch_size;
@@ -129,7 +129,7 @@ struct KernelLauncher {
 
   cutlass::Status
   run(sycl::queue& queue,
-      const chunk_prefill_args_t& args,
+      const paged_decode_args_t& args,
       const cutlass::KernelHardwareInfo& hw_info) {
     ProblemShapeType shape = initialize(args);
 
@@ -218,7 +218,7 @@ template <
     typename GmemTiledCopyK = void,
     typename GmemTiledCopyV = void,
     typename GmemTiledCopyO = void>
-struct FMHAConfig {
+struct PagedDecodeConfig {
   static constexpr int SGTileQ =
       get<0>(shape_div(TileShapeQK{}, shape(SubgroupLayoutQK{})))();
   using MMAOperation = cute::conditional_t<
@@ -237,10 +237,10 @@ struct FMHAConfig {
       bool Causal,
       bool Local,
       bool Sink>
-  static void run(sycl::queue& queue, const chunk_prefill_args_t& args) {
+  static void run(sycl::queue& queue, const paged_decode_args_t& args) {
     cutlass::KernelHardwareInfo hw_info;
 
-    using ProblemShapeType = cutlass::fmha::kernel::FMHAProblemShape<VarLen>;
+    using ProblemShapeType = cutlass::fmha::kernel::DecodeProblemShape<VarLen>;
 
     using TiledMMAQK = typename TiledMMAHelper<
         MMA_Atom<MMAOperation>,
@@ -290,45 +290,46 @@ struct FMHAConfig {
         TensorO,
         GmemTiledCopyO>;
 
-    using FMHAKernel = cutlass::fmha::kernel::XeFMHAFwdKernel<
+    using FMHAKernel = cutlass::fmha::kernel::XeFMHAFwdDynamicSplitKernel<
         ProblemShapeType,
         CollectiveMainloop,
         CollectiveEpilogue,
         Scheduler>;
 
-    KernelLauncher<FMHAKernel, VarLen> launcher;
+    DecodeKernelLauncher<FMHAKernel, false> launcher;
 
     launcher.run(queue, args, hw_info);
   }
 
   template <bool... Bs>
   static void
-  kernel_dispatch(sycl::queue& queue, const chunk_prefill_args_t& args) {
-    return run<cutlass::fmha::kernel::XeFHMAIndividualTileScheduler, Bs...>(
+  kernel_dispatch(sycl::queue& queue, const paged_decode_args_t& args) {
+    return run<cutlass::fmha::kernel::XeFHMAIndividualPersistentTileScheduler, Bs...>(
         queue, args);
   }
 
   template <bool... Bs, typename... Ts>
   static void kernel_dispatch(
-      sycl::queue& queue, const chunk_prefill_args_t& args, bool b, Ts... ts) {
-    if (b) {
-      kernel_dispatch<Bs..., true>(queue, args, ts...);
-    } else {
-      kernel_dispatch<Bs..., false>(queue, args, ts...);
-    }
+      sycl::queue& queue, const paged_decode_args_t& args, bool b, Ts... ts) {
+    // if (b) {
+    //   kernel_dispatch<Bs..., true>(queue, args, ts...);
+    // } else {
+    //   kernel_dispatch<Bs..., false>(queue, args, ts...);
+    // }
+    kernel_dispatch<false, true, false, false, false>(queue, args);
   }
 };
 
-template <typename chunk_policy>
-void policy_dispatch(
-    sycl::queue& queue, CutlassType cuType, const chunk_prefill_args_t& args) {
-  const int PipelineStages = 2;
+template <typename decode_policy>
+void decode_policy_dispatch(
+    sycl::queue& queue, CutlassType cuType, const paged_decode_args_t& args) {
+  const int PipelineStages = 1;
   if (cuType == CutlassType::half) {
-    return FMHAConfig<
-        typename chunk_policy::ShapeQK,
-        typename chunk_policy::ShapePV,
-        typename chunk_policy::ShapeOut,
-        typename chunk_policy::SubgroupLayoutQK,
+    return PagedDecodeConfig<
+        typename decode_policy::ShapeQK,
+        typename decode_policy::ShapePV,
+        typename decode_policy::ShapeOut,
+        typename decode_policy::SubgroupLayoutQK,
         void,
         PipelineStages,
         half_t,
@@ -338,23 +339,23 @@ void policy_dispatch(
         kernel_dispatch(
             queue,
             args,
-            true,    // args.is_varlen,
+            false,    // args.is_varlen,
             true,    // args.is_paged,
             false,   // args.is_causal,
             false,   // args.is_local,
             false);  // args.is_sink);
   } else {
-    return FMHAConfig<
-        typename chunk_policy::ShapeQK,
-        typename chunk_policy::ShapePV,
-        typename chunk_policy::ShapeOut,
-        typename chunk_policy::SubgroupLayoutQK,
+    return PagedDecodeConfig<
+        typename decode_policy::ShapeQK,
+        typename decode_policy::ShapePV,
+        typename decode_policy::ShapeOut,
+        typename decode_policy::SubgroupLayoutQK,
         void,
         PipelineStages>::
         kernel_dispatch(
             queue,
             args,
-            true,    // args.is_varlen,
+            false,    // args.is_varlen,
             true,    // args.is_paged,
             false,   // args.is_causal,
             false,   // args.is_local,
@@ -362,7 +363,7 @@ void policy_dispatch(
   }
 }
 
-void cutlass_chunk_prefill_impl(
+void cutlass_paged_decode_impl(
     sycl::queue& queue,
     const at::Tensor& query,      // [seq_q, heads, head_size]
     const at::Tensor& key_cache,  // [num_block, block_size, heads, head_size]
@@ -418,7 +419,7 @@ void cutlass_chunk_prefill_impl(
         window_size_right == -1 ? max_seqlen_k : window_size_right;
   }
 
-  chunk_prefill_args_t args = {
+  paged_decode_args_t args = {
       query.data_ptr(),
       key_cache.data_ptr(),
       value_cache.data_ptr(),
@@ -455,13 +456,13 @@ void cutlass_chunk_prefill_impl(
           std::to_string(max_head_size));
 
   if (args.head_size == HEAD_SIZE_LIMIT_0) {
-    policy_dispatch<chunk_policy_head64>(queue, cuType, args);
+    decode_policy_dispatch<decode_policy_head64>(queue, cuType, args);
   } else if (args.head_size == HEAD_SIZE_LIMIT_1) {
-    policy_dispatch<chunk_policy_head128>(queue, cuType, args);
+    decode_policy_dispatch<decode_policy_head128>(queue, cuType, args);
   } else if (args.head_size == HEAD_SIZE_LIMIT_2) {
-    policy_dispatch<chunk_policy_head192>(queue, cuType, args);
+    decode_policy_dispatch<decode_policy_head192>(queue, cuType, args);
   } else if (args.head_size == HEAD_SIZE_LIMIT_3) {
-    policy_dispatch<chunk_policy_head256>(queue, cuType, args);
+    decode_policy_dispatch<decode_policy_head256>(queue, cuType, args);
   } else {
     TORCH_CHECK(false, "Unsupported head size for fmha");
   }
