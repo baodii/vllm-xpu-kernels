@@ -69,6 +69,12 @@ def flash_attn_varlen_func(
     q, k, v = [maybe_contiguous(x) for x in (q, k, v)]
 
     dummy_cu_seqlens_k = torch.empty_like(cu_seqlens_q)
+    print(q.shape, k.shape, v.shape)
+    print(cu_seqlens_q)
+    print(cu_seqlens_k)
+    print(block_table)
+    print(f"seqused_k: {seqused_k}")
+    print(f"cu_seqlens_k: {cu_seqlens_k}")
 
     if fa_version == 2:
         if scheduler_metadata is not None and q_descale is not None \
@@ -78,32 +84,58 @@ def flash_attn_varlen_func(
                 "k_descale, v_descale")
         if num_splits > 1:
             raise NotImplementedError("FA2 does not support num_splits > 1")
-        out, softmax_lse = torch.ops._vllm_fa2_C.varlen_fwd(
-            q,
-            k,
-            v,
-            out,
-            cu_seqlens_q,
-            # cu_seqlens_k not used since we use seqused_k, but flash_api.cpp
-            # still wants it so we pass all zeros
-            dummy_cu_seqlens_k if cu_seqlens_k is None else cu_seqlens_k,
-            seqused_k,
-            None,
-            block_table,
-            alibi_slopes,
-            max_seqlen_q,
-            max_seqlen_k,
-            dropout_p,
-            softmax_scale,
-            s_aux,
-            False,
-            causal,
-            real_window_size[0],
-            real_window_size[1],
-            softcap,
-            return_softmax_lse and dropout_p > 0,
-            None,
-        )
+
+        if max_seqlen_q == 1:
+            batch_size = block_table.shape[0]
+            num_heads_kv = k.shape[2]
+            head_size = k.shape[-1]
+            block_size = k.shape[1]
+            batch_k = torch.zeros([batch_size, max_seqlen_k, num_heads_kv, head_size], dtype=k.dtype, device=k.device)
+            batch_v = torch.zeros([batch_size, max_seqlen_k, num_heads_kv, head_size], dtype=v.dtype, device=v.device)
+            for i in range(batch_size):
+                seq_k_len = cu_seqlens_k[i+1] - cu_seqlens_k[i]
+                num_blocks = (seq_k_len + block_size - 1) // block_size
+                block_indices = block_table[i, :num_blocks]
+                k_slice = k[block_indices].view(-1, num_heads_kv, head_size)
+                k_slice = k_slice[:seq_k_len]
+                v_slice = v[block_indices].view(-1, num_heads_kv, head_size)
+                v_slice = v_slice[:seq_k_len]
+                batch_k[i, :seq_k_len] = k_slice
+                batch_v[i, :seq_k_len] = v_slice
+
+            batch_q = q.view(batch_size, -1, q.shape[-2], q.shape[-1])
+            batch_k = batch_k.permute(0, 2, 1, 3).contiguous()
+            batch_v = batch_v.permute(0, 2, 1, 3).contiguous()
+            batch_q = batch_q.permute(0, 2, 1, 3).contiguous()
+            print(f"batch_q: {batch_q.shape}, batch_k: {batch_k.shape}, batch_v: {batch_v.shape}")
+
+            out, softmax_lse = torch.ops._vllm_fa2_C.varlen_fwd(
+                batch_q,
+                batch_k,
+                batch_v,
+                out,
+                cu_seqlens_q,
+                # cu_seqlens_k not used since we use seqused_k, but flash_api.cpp
+                # still wants it so we pass all zeros
+                dummy_cu_seqlens_k if cu_seqlens_k is None else cu_seqlens_k,
+                seqused_k,
+                None,
+                block_table,
+                alibi_slopes,
+                max_seqlen_q,
+                max_seqlen_k,
+                dropout_p,
+                softmax_scale,
+                s_aux,
+                False,
+                causal,
+                real_window_size[0],
+                real_window_size[1],
+                softcap,
+                return_softmax_lse and dropout_p > 0,
+                None,
+            )
+
     else:
         raise NotImplementedError("not support yet")
     return (out, softmax_lse) if return_softmax_lse else out

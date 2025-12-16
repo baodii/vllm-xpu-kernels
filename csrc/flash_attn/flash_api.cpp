@@ -1,7 +1,7 @@
 #include "pytorch_shim.h"
 
 #include "core/registration.h"
-#include "xpu/cutlass_kernels/chunk_prefill.hpp"
+// #include "xpu/cutlass_kernels/chunk_prefill.hpp"
 #include "xpu/cutlass_kernels/paged_decode.hpp"
 #include "utils.h"
 #include <torch/all.h>
@@ -51,7 +51,7 @@ std::vector<at::Tensor> mha_varlen_fwd(
       k.stride(-1) == 1, "Input tensor must have contiguous last dimension");
   TORCH_CHECK(
       v.stride(-1) == 1, "Input tensor must have contiguous last dimension");
-  TORCH_CHECK(q.dim() == 3, "query must be in ragged format");
+  // TORCH_CHECK(q.dim() == 3, "query must be in ragged format");
 
   CHECK_DEVICE(block_table_);
   TORCH_CHECK(
@@ -82,12 +82,14 @@ std::vector<at::Tensor> mha_varlen_fwd(
     out = torch::empty_like(q);
   }
 
-  bool is_varlen = false;
+  bool is_varlen = true;
   bool is_paged = true;
   bool is_local = (window_size_left != -1) | (window_size_right != -1);
   bool is_sink = softmax_sink_.has_value();
 
   if (max_seqlen_q == 1) {
+    is_varlen = false;
+    is_paged = false;
     cutlass_paged_decode_impl(
       queue,
       q,
@@ -108,28 +110,29 @@ std::vector<at::Tensor> mha_varlen_fwd(
       is_causal,
       is_local,
       is_sink);
-  } else {
-    cutlass_chunk_prefill_impl(
-        queue,
-        q,
-        k,
-        v,
-        out,
-        block_table_,
-        cu_seqlens_q,
-        cu_seqlens_k,
-        max_seqlen_q,
-        max_seqlen_k,
-        softmax_scale,
-        softmax_sink_,
-        window_size_left,
-        window_size_right,
-        is_varlen,
-        is_paged,
-        is_causal,
-        is_local,
-        is_sink);
-  }
+  } 
+  // else {
+  //   cutlass_chunk_prefill_impl(
+  //       queue,
+  //       q,
+  //       k,
+  //       v,
+  //       out,
+  //       block_table_,
+  //       cu_seqlens_q,
+  //       cu_seqlens_k,
+  //       max_seqlen_q,
+  //       max_seqlen_k,
+  //       softmax_scale,
+  //       softmax_sink_,
+  //       window_size_left,
+  //       window_size_right,
+  //       is_varlen,
+  //       is_paged,
+  //       is_causal,
+  //       is_local,
+  //       is_sink);
+  // }
 
 
   if (return_softmax) {

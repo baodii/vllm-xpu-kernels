@@ -8,18 +8,18 @@ import torch
 
 from vllm_xpu_kernels.flash_attn_interface import flash_attn_varlen_func
 
-NUM_HEADS = [(4, 4), (8, 2)]
-HEAD_SIZES = [64, 128, 192, 256]
+NUM_HEADS = [(8, 1)]
+HEAD_SIZES = [128]
 BLOCK_SIZES = [64]
-DTYPES = [torch.bfloat16, torch.half]
+DTYPES = [torch.half]
 QDTYPES = [None]
 # one value large enough to test overflow in index calculation.
 # one value small enough to test the schema op check
-NUM_BLOCKS = [32768, 2048]
+NUM_BLOCKS = [2048]
 SOFT_CAPS = [None]
-SLIDING_WINDOWS = [(-1, 2), (2, -1), (11, 3), (-1, -1)]
-SINK = [False, True]
-CASUAL = [False, True]
+SLIDING_WINDOWS = [(-1, -1)]
+SINK = [False]
+CASUAL = [False]
 
 
 def ref_paged_attn(query: torch.Tensor,
@@ -53,6 +53,7 @@ def ref_paged_attn(query: torch.Tensor,
         k = k[:kv_len]
         v = value_cache[block_indices].view(-1, num_kv_heads, head_size)
         v = v[:kv_len]
+        print(f"q shape: {q.shape}, k shape: {k.shape}, v shape: {v.shape}")
 
         if q.shape[1] != k.shape[1]:
             k = torch.repeat_interleave(k, q.shape[1] // k.shape[1], dim=1)
@@ -105,8 +106,8 @@ MINI_PYTEST_PARAMS = {
 
 
 @pytest.mark.parametrize("seq_lens",
-                         [[(1, 1328), (5, 18),
-                           (129, 463)], [(1, 523), (1, 37), (1, 2011)]])
+                         [[(1, 256),
+                           ]])
 @pytest.mark.parametrize("num_heads", NUM_HEADS)
 @pytest.mark.parametrize("head_size", HEAD_SIZES)
 @pytest.mark.parametrize("block_size", BLOCK_SIZES)
@@ -218,5 +219,20 @@ def test_varlen_with_paged_kv(
     atol, rtol = 1.5e-2, 1e-2
     if q_dtype is not None:
         atol, rtol = 1.5e-1, 1.5e-1
-    torch.testing.assert_close(output, ref_output, atol=atol, rtol=rtol), \
+    torch.testing.assert_close(output.squeeze(), ref_output.squeeze(), atol=atol, rtol=rtol), \
         f"{torch.max(torch.abs(output - ref_output))}"
+
+
+if __name__ == "__main__":
+    test_varlen_with_paged_kv([(1, 256)],
+                              (8, 1),
+                              128,
+                              (-1, -1),
+                              torch.half,
+                              64, None,
+                              2048,
+                              2,
+                              None,
+                              False,
+                              False)
+

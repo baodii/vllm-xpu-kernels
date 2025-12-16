@@ -123,6 +123,7 @@ struct DecodeKernelLauncher {
     stride_O = cutlass::make_cute_packed_stride(
         StrideO{},
         cute::make_shape(seq_len_qo, head_size_vo, num_heads_q, batch));
+    cute::print("*** shape: "); cute::print(shape.batch); cute::print(", "); cute::print(shape.num_heads_q); cute::print(", "); cute::print(shape.num_heads_kv); cute::print(", "); cute::print(shape.head_size_qk); cute::print(", "); cute::print(shape.head_size_vo); cute::print(", "); cute::print(shape.seq_len_qo); cute::print(", "); cute::print(shape.seq_len_kv); cute::print("\n");
 
     return shape;
   }
@@ -143,13 +144,11 @@ struct DecodeKernelLauncher {
          stride_V,
          reinterpret_cast<ElementO*>(args.out),
          stride_O},
-        {args.sm_scale,
-         static_cast<int*>(args.block_table),
-         args.block_size,
-         args.max_blocks_per_seq,
-         args.total_seqlen_k},
+        {args.sm_scale},
         {},
         hw_info};
+
+    printf("*** sm_count: %d\n", hw_info.sm_count);
 
     // Define device-global scratch memory
     size_t workspace_size = FMHAKernel::get_workspace_size(arguments);
@@ -163,6 +162,8 @@ struct DecodeKernelLauncher {
     auto params =
         FMHAKernel::to_underlying_arguments(arguments, workspace.get());
 
+    printf("partial ptr: %p\n", params.partial_results_ptr);
+
     run(queue, params);
 
     return cutlass::Status::kSuccess;
@@ -174,6 +175,10 @@ struct DecodeKernelLauncher {
 
     dim3 const block = FMHAKernel::get_block_shape();
     dim3 const grid = FMHAKernel::get_grid_shape(params);
+
+    printf("Launching FMHA kernel with grid (%d, %d, %d) and block (%d, %d, %d)\n",
+            grid.x, grid.y, grid.z,
+            block.x, block.y, block.z);
 
     // configure smem size and carveout
     int smem_size = FMHAKernel::SharedStorageSize;
@@ -239,6 +244,7 @@ struct PagedDecodeConfig {
       bool Sink>
   static void run(sycl::queue& queue, const paged_decode_args_t& args) {
     cutlass::KernelHardwareInfo hw_info;
+    hw_info.sm_count = cutlass::KernelHardwareInfo::query_device_multiprocessor_count(hw_info.device_id);
 
     using ProblemShapeType = cutlass::fmha::kernel::DecodeProblemShape<VarLen>;
 
@@ -269,10 +275,9 @@ struct PagedDecodeConfig {
 
     // Mainloop
     using MainloopDispatchPolicy = cutlass::fmha::XeDefault<PipelineStages>;
-    using CollectiveMainloop = cutlass::fmha::collective::FMHAFwdMainloop<
+    using CollectiveMainloop = cutlass::fmha::collective::DecodeFwdMainloop<
         MainloopDispatchPolicy,
         Causal,
-        Paged,
         TiledMMAQK,
         TiledMMAPV,
         VTiles,
@@ -316,7 +321,7 @@ struct PagedDecodeConfig {
     // } else {
     //   kernel_dispatch<Bs..., false>(queue, args, ts...);
     // }
-    kernel_dispatch<false, true, false, false, false>(queue, args);
+    kernel_dispatch<false, false, false, false, false>(queue, args);
   }
 };
 
@@ -340,7 +345,7 @@ void decode_policy_dispatch(
             queue,
             args,
             false,    // args.is_varlen,
-            true,    // args.is_paged,
+            false,    // args.is_paged,
             false,   // args.is_causal,
             false,   // args.is_local,
             false);  // args.is_sink);
@@ -356,7 +361,7 @@ void decode_policy_dispatch(
             queue,
             args,
             false,    // args.is_varlen,
-            true,    // args.is_paged,
+            false,    // args.is_paged,
             false,   // args.is_causal,
             false,   // args.is_local,
             false);  // args.is_sink);

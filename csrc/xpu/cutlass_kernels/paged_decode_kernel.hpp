@@ -70,10 +70,6 @@ public:
   // Type Aliases
   //
   using ProblemShape = ProblemShape_;
-  using VariableLength = cutlass::fmha::collective::VariableLength;
-  static constexpr bool is_var_len =
-      cutlass::fmha::collective::is_variable_length_v<
-          typename ProblemShape::SeqLenType>;
 
   // Mainloop derived types
   using CollectiveMainloop = CollectiveMainloop_;
@@ -208,10 +204,10 @@ public:
   static cutlass::Status initialize_workspace(Arguments const &args, void *workspace = nullptr,
                                               cudaStream_t stream = nullptr, CudaHostAdapter *cuda_adapter = nullptr) {
     int num_batch_heads = args.kernel.shape.batch * args.kernel.shape.num_heads_q;
-    compat::fill(reinterpret_cast<int32_t*>(workspace), (int32_t)0, num_batch_heads);
+    compat::fill(reinterpret_cast<int32_t*>(workspace), (int32_t)1, num_batch_heads);
     auto partial_ws_count = (get_workspace_size(args) - num_batch_heads * sizeof(int32_t)) / sizeof(ElementA);
     auto* partial_results_ptr = reinterpret_cast<ElementA*>(reinterpret_cast<int32_t*>(workspace) + num_batch_heads);
-    compat::fill(partial_results_ptr, (ElementA)0, partial_ws_count);
+    compat::fill(partial_results_ptr, (ElementA)1, partial_ws_count);
     return Status::kSuccess;
   }
 
@@ -223,20 +219,6 @@ public:
   static dim3 get_block_shape() { 
     printf("dynamic split block shape sg per wg: %d, sg size: %d\n", SGPerWG::value, intel::sg_size);
     return dim3(SGPerWG::value * intel::sg_size, 1, 1); 
-  }
-
-  CUTLASS_DEVICE
-  Shape<int, int> get_sequence_length_shape(
-      ProblemShape const& problem_shape, int const& batch) {
-    if constexpr (is_var_len) {
-      return cutlass::fmha::collective::apply_variable_length(
-          Shape<VariableLength, VariableLength>{
-              problem_shape.seq_len_qo, problem_shape.seq_len_kv},
-          batch);
-    } else {
-      return Shape<int, int>{
-          problem_shape.seq_len_qo, problem_shape.seq_len_kv};
-    }
   }
 
   CUTLASS_DEVICE
@@ -413,6 +395,12 @@ public:
           merged_res(2 * i + size(FragA{}.shape())) = tA_max(i);
           merged_res(2 * i + 1 + size(FragA{}.shape())) = tA_sum(i);
         }
+        
+        if (wg_id == 0 && thr_id == 0) {
+          cute::print("tPartial: "); cute::print(tPartial); cute::print("\n");
+          cute::print("merged_res: "); cute::print(merged_res); cute::print("\n");
+          cute::print("offset: "); cute::print(offset); cute::print("\n");
+        }
         copy(merged_res, tPartial);
 
         // after store, set atomic cnt
@@ -446,6 +434,7 @@ public:
                      + tid_in_sg * num_elem_per_thread;
           Tensor tPartial = make_tensor(params.partial_results_ptr + offset, make_shape(Int<num_elem_per_thread>{}));
           Tensor merged_res = make_tensor<ElementA>(Int<num_elem_per_thread>{});
+
           copy(tPartial, merged_res);
 
           if (i == 0) {
