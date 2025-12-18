@@ -553,6 +553,7 @@ struct DecodeFwdMainloop<XeDefault<Stages>, CausalMask_,
   using SingleFragA = FragC<TiledMMAPV>;                          // (atom val,q',v')
   using FragA = expand_sg_fragment_t<SingleFragA, 1, VTiles>;     // (atom val,q',v',VV)
   using FragARow = decltype(reduce<1>(FragA{}, sycl::plus<void>{}));
+  // static_assert(is_same_v<decltype(FragSRow{}.shape()), float>, "dtype mismatched");
   using ElementA = typename TiledMMAPV::ValTypeD;
 
   static constexpr bool CausalMask = CausalMask_;
@@ -604,7 +605,8 @@ struct DecodeFwdMainloop<XeDefault<Stages>, CausalMask_,
              int              thr_id,
              int              seq_len,
              int              full_tile_offset,
-             int              discard_seq_coord) {
+             int              discard_seq_coord,
+             bool             need_init = false) {
     using namespace sycl::ext::oneapi::this_work_item;
 
     // Short dimension names:
@@ -616,9 +618,6 @@ struct DecodeFwdMainloop<XeDefault<Stages>, CausalMask_,
     // Capital letters (Q, K, ...) refer to WG block indices.
     // Primed letters (q', k', ...) refer to atom block indices.
 
-    // int thr_id = int(ThreadIdxX());
-    int wg_id = int(BlockIdxZ());
-
     auto tile_shape_v = make_shape(get<1>(TileShapePV{}) * C<VTiles>{}, get<2>(TileShapePV{}));
 
     /* Create proxy coordinate tensors for Q/K/P/V */
@@ -626,13 +625,19 @@ struct DecodeFwdMainloop<XeDefault<Stages>, CausalMask_,
     Tensor cK = make_identity_tensor(K_2D.shape());             // (k,d)
     Tensor cV = make_identity_tensor(V_2D.shape());             // (v,k)
     Tensor cP = make_identity_tensor(take<0,2>(TileShapeQK{})); // (q,k)
-                                                                //
+
+#if 0
+    if (ThreadIdxX() == 0 && BlockIdxZ() == 0) {
+      print("Q 2D shape: "); print(Q_2D.shape()); print("\n");
+    }
+#endif
+
     /* Partition global tensors into workgroup tiles */
     Tensor gQ       = local_tile(cQ, TileShapeQK{}, append(blk_qv,_),             Step<_1,X,_1>{});   // (q,d,D)
     Tensor gK       = local_tile(cK, TileShapeQK{}, make_coord(_,_,_),            Step<X,_1,_1>{});   // (k,d,K,D)
     Tensor gV       = local_tile(cV, tile_shape_v,  make_coord(get<1>(blk_qv),_));                    // (v,k,K)
     Tensor gV_split = local_tile(gV, TileShapePV{}, make_coord(_,_,0),            Step<X,_1,_1>{});   // (v,k,VV,K)
-                                                                                                      //
+
     /* Create global -> register copies */
     TiledCopyQ copy_q{Q_2D};
     TiledCopyK copy_k{K_2D};
@@ -683,7 +688,7 @@ struct DecodeFwdMainloop<XeDefault<Stages>, CausalMask_,
 
     /* Initialization steps for first block: Q/K prefetch, O init */
     /* TODO: limit D prefetch for large head size, and reorder K prefetches */
-    if (blk_k0 == 0) {
+    if (blk_k0 == 0 || need_init) {
       for (int D = 0; D < size<3>(pQgQ); D++) {
         prefetch(prefetch_q, pQgQ(_,_,_,D));
       }

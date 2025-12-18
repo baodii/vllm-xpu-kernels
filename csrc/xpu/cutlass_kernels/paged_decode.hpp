@@ -29,6 +29,9 @@ struct paged_decode_args_t {
   void* key;
   void* value;
   void* out;
+  void* tem_out;
+  void* exp_sums;
+  void* max_logits;
   void* block_table;
   void* cu_seqlens_q;
   void* cu_seqlens_k;
@@ -51,9 +54,10 @@ struct paged_decode_args_t {
   bool is_causal = false;
   bool is_local = false;
   bool is_sink = false;
+  int num_kv_splits = 1;
 };
 
-template <class FMHAKernel, bool isVarLen>
+template <class FMHAKernel, class ReductionSplitKernel, bool isVarLen>
 struct DecodeKernelLauncher {
   using StrideQ = typename FMHAKernel::StrideQ;
   using StrideK = typename FMHAKernel::StrideK;
@@ -76,6 +80,11 @@ struct DecodeKernelLauncher {
   StrideK stride_K;
   StrideV stride_V;
   StrideO stride_O;
+  StrideO stride_Oaccum;
+  StrideO stride_exp_sums;
+  StrideO stride_max_logits;
+
+  int num_kv_splits;
 
   ProblemShapeType initialize(const paged_decode_args_t& args) {
     ProblemShapeType shape;
@@ -111,6 +120,8 @@ struct DecodeKernelLauncher {
     auto seq_len_qo = shape_init.seq_len_qo;
     auto seq_len_kv = shape_init.seq_len_kv;
 
+    num_kv_splits = args.num_kv_splits;
+
     stride_Q = cutlass::make_cute_packed_stride(
         StrideQ{},
         cute::make_shape(seq_len_qo, head_size_qk, num_heads_q, batch));
@@ -123,7 +134,18 @@ struct DecodeKernelLauncher {
     stride_O = cutlass::make_cute_packed_stride(
         StrideO{},
         cute::make_shape(seq_len_qo, head_size_vo, num_heads_q, batch));
+    stride_Oaccum = cutlass::make_cute_packed_stride(StrideO{}, cute::make_shape(seq_len_qo, head_size_vo, num_heads_q * num_kv_splits, batch));
+
+    // assume seq_len_qo==1
+    stride_exp_sums = cutlass::make_cute_packed_stride(StrideO{}, cute::make_shape(seq_len_qo, num_kv_splits, num_heads_q, batch));
+
+    stride_max_logits = cutlass::make_cute_packed_stride(StrideO{}, cute::make_shape(seq_len_qo, num_kv_splits, num_heads_q, batch));
     cute::print("*** shape: "); cute::print(shape.batch); cute::print(", "); cute::print(shape.num_heads_q); cute::print(", "); cute::print(shape.num_heads_kv); cute::print(", "); cute::print(shape.head_size_qk); cute::print(", "); cute::print(shape.head_size_vo); cute::print(", "); cute::print(shape.seq_len_qo); cute::print(", "); cute::print(shape.seq_len_kv); cute::print("\n");
+
+    cute::print("stride_Q: "); cute::print(stride_Q); cute::print("\n");
+    cute::print("stride_K: "); cute::print(stride_K); cute::print("\n");
+    cute::print("stride_V: "); cute::print(stride_V); cute::print("\n");
+    cute::print("stride_O: "); cute::print(stride_O); cute::print("\n");
 
     return shape;
   }
@@ -136,49 +158,65 @@ struct DecodeKernelLauncher {
 
     typename FMHAKernel::Arguments arguments{
         {shape,
-         reinterpret_cast<ElementQ*>(args.query),
-         stride_Q,
-         reinterpret_cast<ElementK*>(args.key),
-         stride_K,
-         reinterpret_cast<ElementV*>(args.value),
-         stride_V,
-         reinterpret_cast<ElementO*>(args.out),
-         stride_O},
+         reinterpret_cast<ElementQ*>(args.query), stride_Q,
+         reinterpret_cast<ElementK*>(args.key), stride_K,
+         reinterpret_cast<ElementV*>(args.value), stride_V,
+         reinterpret_cast<ElementO*>(args.out), stride_O,
+         reinterpret_cast<ElementO*>(args.tem_out), stride_Oaccum,
+         reinterpret_cast<ElementO*>(args.exp_sums), stride_exp_sums,
+         reinterpret_cast<ElementO*>(args.max_logits), stride_max_logits,
+        },
         {args.sm_scale},
         {},
-        hw_info};
+        hw_info,
+        args.num_kv_splits};
+    
+    typename ReductionSplitKernel::Arguments reduce_arg {
+      {shape,
+       reinterpret_cast<ElementO*>(args.out), stride_O,
+       reinterpret_cast<ElementO*>(args.tem_out), stride_Oaccum,
+       reinterpret_cast<ElementO*>(args.exp_sums), stride_exp_sums,
+       reinterpret_cast<ElementO*>(args.max_logits), stride_max_logits},
+       hw_info,
+       args.num_kv_splits
+    };
 
     printf("*** sm_count: %d\n", hw_info.sm_count);
 
     // Define device-global scratch memory
     size_t workspace_size = FMHAKernel::get_workspace_size(arguments);
-    cutlass::device_memory::allocation<uint8_t> workspace(workspace_size);
+    size_t reduce_workspace_size = ReductionSplitKernel::get_workspace_size(reduce_arg);
+    cutlass::device_memory::allocation<uint8_t> workspace(workspace_size + reduce_workspace_size);
+
+    if (!FMHAKernel::can_implement(arguments)) {
+      std::cout << "Invalid Problem Size: " << args.batch_size << 'x' << args.num_heads_q << 'x' <<
+        args.max_queries << 'x' << args.max_keys << 'x' << args.head_size << 'x'  << args.head_size
+        << std::endl;
+      return cutlass::Status::kErrorInvalidProblem;
+    }
 
     // Initialize the workspace
     FMHAKernel::initialize_workspace(arguments, workspace.get());
 
-    // Convert host-side arguments to device-side arguments to be passed to the
-    // kernel
-    auto params =
-        FMHAKernel::to_underlying_arguments(arguments, workspace.get());
-
-    printf("partial ptr: %p\n", params.partial_results_ptr);
-
-    run(queue, params);
+    // Convert host-side arguments to device-side arguments to be passed to the kernel
+    auto params = FMHAKernel::to_underlying_arguments(arguments, workspace.get());
+    auto reduce_params = ReductionSplitKernel::to_underlying_arguments(reduce_arg, workspace.get() + workspace_size);
+      
+    ReductionSplitKernel::initialize_workspace(reduce_arg, workspace.get() + workspace_size);
+    run(queue, params, reduce_params);
 
     return cutlass::Status::kSuccess;
   }
-
-  static void run(sycl::queue& queue, typename FMHAKernel::Params params) {
+  
+  static void run(sycl::queue& queue,
+                  typename FMHAKernel::Params params,
+                  typename ReductionSplitKernel::Params reduce_params)
+  {
     namespace syclex = sycl::ext::oneapi::experimental;
     namespace intelex = sycl::ext::intel::experimental;
 
     dim3 const block = FMHAKernel::get_block_shape();
     dim3 const grid = FMHAKernel::get_grid_shape(params);
-
-    printf("Launching FMHA kernel with grid (%d, %d, %d) and block (%d, %d, %d)\n",
-            grid.x, grid.y, grid.z,
-            block.x, block.y, block.z);
 
     // configure smem size and carveout
     int smem_size = FMHAKernel::SharedStorageSize;
@@ -186,21 +224,36 @@ struct DecodeKernelLauncher {
     const auto sycl_block = compat::dim3(block.x, block.y, block.z);
     const auto sycl_grid = compat::dim3(grid.x, grid.y, grid.z);
 
-    // Launch parameters depend on whether SYCL compiler supports work-group
-    // scratch memory extension
-    compat::experimental::launch_properties launch_props{
-        syclex::work_group_scratch_size(smem_size),
+    // Launch parameters depend on whether SYCL compiler supports work-group scratch memory extension
+    compat::experimental::launch_properties launch_props {
+      syclex::work_group_scratch_size(smem_size),
     };
     compat::experimental::kernel_properties kernel_props{
-        syclex::sub_group_size<cute::intel::sg_size>, intelex::grf_size<256>};
-    compat::experimental::launch_policy policy{
-        sycl_grid, sycl_block, launch_props, kernel_props};
-    auto event =
-        compat::experimental::launch<cutlass::device_kernel<FMHAKernel>>(
-            policy, queue, params);
+      syclex::sub_group_size<cute::intel::sg_size>,
+      intelex::grf_size<256>
+    };
+    compat::experimental::launch_policy policy{sycl_grid, sycl_block, launch_props, kernel_props};
+    auto event = compat::experimental::launch<cutlass::device_kernel<FMHAKernel>, FMHAKernel>(policy, params);
+
+    dim3 const reduce_grid = ReductionSplitKernel::get_grid_shape(reduce_params);
+    int reduce_smem_size = ReductionSplitKernel::SharedStorageSize;
+    const auto reduce_sycl_block = compat::dim3(block.x, block.y, block.z);
+    const auto reduce_sycl_grid = compat::dim3(reduce_grid.x, reduce_grid.y, reduce_grid.z);
+    compat::experimental::launch_properties launch_props_reduce {
+      syclex::work_group_scratch_size(reduce_smem_size),
+    };
+    compat::experimental::launch_policy reduce_policy{reduce_sycl_grid, reduce_sycl_block, launch_props_reduce, kernel_props};
+
+    // wait for FA kernel finished
+    // maybe no need wait here if launched with in-order queue
+    event.wait();
+
+    auto reduce_event = compat::experimental::launch<cutlass::device_kernel<ReductionSplitKernel>, ReductionSplitKernel>(reduce_policy, reduce_params);
 
     EventManager::getInstance().addEvent(event);
+    EventManager::getInstance().addEvent(reduce_event);
   }
+
 };
 
 template <
@@ -213,12 +266,14 @@ template <
     typename ElementQ = bfloat16_t,
     typename ElementK = bfloat16_t,
     typename ElementV = bfloat16_t,
-    typename ElementO = bfloat16_t,
+    typename ElementO = float,
+    typename ElementOaccum = float,
     typename MMAOperation_ = void, /* void -> default */
     typename StrideQ = Stride<int, _1, int, int>,
     typename StrideK = Stride<int, _1, int, int>,
     typename StrideV = Stride<_1, int, int, int>,
     typename StrideO = Stride<int, _1, int, int>,
+    typename StrideOaccum = Stride<int, _1, int, int>,
     typename GmemTiledCopyQ = void, /* void -> default block 2D */
     typename GmemTiledCopyK = void,
     typename GmemTiledCopyV = void,
@@ -271,7 +326,7 @@ struct PagedDecodeConfig {
     using TensorQ = decltype(make_dummy_tensor(ElementQ{}, StrideQ{}));
     using TensorK = decltype(make_dummy_tensor(ElementK{}, StrideK{}));
     using TensorV = decltype(make_dummy_tensor(ElementV{}, StrideV{}));
-    using TensorO = decltype(make_dummy_tensor(ElementO{}, StrideO{}));
+    using TensorO = decltype(make_dummy_tensor(ElementOaccum{}, StrideOaccum{}));
 
     // Mainloop
     using MainloopDispatchPolicy = cutlass::fmha::XeDefault<PipelineStages>;
@@ -289,19 +344,22 @@ struct PagedDecodeConfig {
         GmemTiledCopyV>;
 
     // Epilogue
-    using CollectiveEpilogue = cutlass::fmha::collective::FMHAFwdEpilogue<
+    using CollectiveEpilogue = cutlass::fmha::collective::DecodeFwdEpilogue<
         CollectiveMainloop,
         TileShapeOutput,
         TensorO,
-        GmemTiledCopyO>;
+        void>;
 
-    using FMHAKernel = cutlass::fmha::kernel::XeFMHAFwdDynamicSplitKernel<
+    using FMHAKernel = cutlass::fmha::kernel::XeFMHAFwdSplitKVKernel<
         ProblemShapeType,
         CollectiveMainloop,
         CollectiveEpilogue,
         Scheduler>;
+    
+    using ReduceSplitKernel = cutlass::reduction::kernel::ReduceSplitK<
+        ProblemShapeType, cutlass::fmha::kernel::XeReduceSplitKTileScheduler, FMHAKernel>;
 
-    DecodeKernelLauncher<FMHAKernel, false> launcher;
+    DecodeKernelLauncher<FMHAKernel, ReduceSplitKernel, false> launcher;
 
     launcher.run(queue, args, hw_info);
   }
@@ -309,7 +367,7 @@ struct PagedDecodeConfig {
   template <bool... Bs>
   static void
   kernel_dispatch(sycl::queue& queue, const paged_decode_args_t& args) {
-    return run<cutlass::fmha::kernel::XeFHMAIndividualPersistentTileScheduler, Bs...>(
+    return run<cutlass::fmha::kernel::XeDecodeIndividualTileScheduler, Bs...>(
         queue, args);
   }
 
@@ -374,6 +432,9 @@ void cutlass_paged_decode_impl(
     const at::Tensor& key_cache,  // [num_block, block_size, heads, head_size]
     const at::Tensor& value_cache,
     at::Tensor& out,
+    at::Tensor& temp_out,     // [batch, num_head_q, seq_q, head_size, num_kv_splits]
+    at::Tensor& exp_sums,     // [batch, num_head_q, seq_q, num_kv_splits]
+    at::Tensor& max_logits,   // [batch, num_head_q, seq_q, num_kv_splits]
     const at::Tensor& block_table,
     const at::Tensor& cu_seqlens_q,
     const at::Tensor& cu_seqlens_k,
@@ -429,6 +490,9 @@ void cutlass_paged_decode_impl(
       key_cache.data_ptr(),
       value_cache.data_ptr(),
       out.data_ptr(),
+      temp_out.data_ptr(),
+      exp_sums.data_ptr(),
+      max_logits.data_ptr(),
       block_table.data_ptr(),
       cu_seqlens_q.data_ptr(),
       cu_seqlens_k.data_ptr(),
