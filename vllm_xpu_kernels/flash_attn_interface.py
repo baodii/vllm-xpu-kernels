@@ -107,6 +107,7 @@ def flash_attn_varlen_func(
             batch_k = batch_k.permute(0, 2, 1, 3).contiguous()
             batch_v = batch_v.permute(0, 2, 1, 3).contiguous()
             batch_q = batch_q.permute(0, 2, 1, 3).contiguous()
+            num_heads_q = batch_q.shape[1]
             print(f"batch_q: {batch_q.shape}, batch_k: {batch_k.shape}, batch_v: {batch_v.shape}")
 
             out, softmax_lse = torch.ops._vllm_fa2_C.varlen_fwd(

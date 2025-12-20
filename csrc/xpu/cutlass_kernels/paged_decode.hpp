@@ -250,6 +250,8 @@ struct DecodeKernelLauncher {
 
     auto reduce_event = compat::experimental::launch<cutlass::device_kernel<ReductionSplitKernel>, ReductionSplitKernel>(reduce_policy, reduce_params);
 
+    reduce_event.wait();
+
     EventManager::getInstance().addEvent(event);
     EventManager::getInstance().addEvent(reduce_event);
   }
@@ -356,7 +358,7 @@ struct PagedDecodeConfig {
         CollectiveEpilogue,
         Scheduler>;
     
-    using ReduceSplitKernel = cutlass::reduction::kernel::ReduceSplitK<
+    using ReduceSplitKernel = cutlass::fmha::kernel::ReduceSplitK<
         ProblemShapeType, cutlass::fmha::kernel::XeReduceSplitKTileScheduler, FMHAKernel>;
 
     DecodeKernelLauncher<FMHAKernel, ReduceSplitKernel, false> launcher;
@@ -414,7 +416,11 @@ void decode_policy_dispatch(
         typename decode_policy::ShapeOut,
         typename decode_policy::SubgroupLayoutQK,
         void,
-        PipelineStages>::
+        PipelineStages,
+        bfloat16_t,
+        bfloat16_t,
+        bfloat16_t,
+        bfloat16_t>::
         kernel_dispatch(
             queue,
             args,
@@ -448,7 +454,8 @@ void cutlass_paged_decode_impl(
     bool is_paged,
     bool is_causal,
     bool is_local,
-    bool is_sink) {
+    bool is_sink,
+    int num_kv_splits) {
   // general params
   int batch_size, num_heads_q, num_heads_kv, head_size;
   // additional params

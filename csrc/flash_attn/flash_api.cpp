@@ -90,12 +90,32 @@ std::vector<at::Tensor> mha_varlen_fwd(
   if (max_seqlen_q == 1) {
     is_varlen = false;
     is_paged = false;
+    int batch = q.size(0);
+    int num_heads_q = q.size(1);
+    int seq_len_q = q.size(2);
+    int head_dim = q.size(3);
+    int num_heads_kv = k.size(1);
+    int seq_len_k = k.size(2);
+    int num_kv_splits = 2;
+    at::Tensor tmp_out = at::empty(
+        {batch, num_heads_q * num_kv_splits, seq_len_q, head_dim}, 
+        q.options().dtype(at::kFloat).device(q.device()));
+    at::Tensor max_logits = at::empty(
+        {batch, num_heads_q, seq_len_q, num_kv_splits},
+        q.options().dtype(at::kFloat).device(q.device()));
+    at::Tensor exp_sums = at::empty(
+        {batch, num_heads_q, seq_len_q, num_kv_splits},
+        q.options().dtype(at::kFloat).device(q.device()));
+    // out = out.to(at::kFloat);
     cutlass_paged_decode_impl(
       queue,
       q,
       k,
       v,
       out,
+      tmp_out,
+      exp_sums,
+      max_logits,
       block_table_,
       cu_seqlens_q,
       cu_seqlens_k,
@@ -109,7 +129,9 @@ std::vector<at::Tensor> mha_varlen_fwd(
       is_paged,
       is_causal,
       is_local,
-      is_sink);
+      is_sink,
+      num_kv_splits);
+    out = out.to(q_type);
   } 
   // else {
   //   cutlass_chunk_prefill_impl(

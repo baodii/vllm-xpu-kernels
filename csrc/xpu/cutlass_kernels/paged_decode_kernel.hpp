@@ -567,7 +567,7 @@ public:
       // store into SLM for later use
 
       ElementO global_max_logits = cutlass::platform::numeric_limits<ElementO>::lowest();
-      ElementO global_exp_sums = 0;
+      ElementO global_exp_sums = static_cast<ElementO>(0.0);
       // only first subgroup participates
       if (thr_id < num_kv_splits) {
         ElementO cur_max_logit = max_logits(seq_idx, thr_id, head_q, l_coord);
