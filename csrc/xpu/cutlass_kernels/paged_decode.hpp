@@ -68,6 +68,7 @@ struct DecodeKernelLauncher {
   using ElementK = typename FMHAKernel::ElementK;
   using ElementV = typename FMHAKernel::ElementV;
   using ElementO = typename FMHAKernel::ElementO;
+  // using ElementOaccum = typename FMHAKernel::ElementOaccum;
 
   using CollectiveMainloop = typename FMHAKernel::CollectiveMainloop;
   using ElementS = typename CollectiveMainloop::ElementS;
@@ -136,16 +137,26 @@ struct DecodeKernelLauncher {
         cute::make_shape(seq_len_qo, head_size_vo, num_heads_q, batch));
     stride_Oaccum = cutlass::make_cute_packed_stride(StrideO{}, cute::make_shape(seq_len_qo, head_size_vo, num_heads_q * num_kv_splits, batch));
 
-    // assume seq_len_qo==1
     stride_exp_sums = cutlass::make_cute_packed_stride(StrideO{}, cute::make_shape(seq_len_qo, num_kv_splits, num_heads_q, batch));
 
     stride_max_logits = cutlass::make_cute_packed_stride(StrideO{}, cute::make_shape(seq_len_qo, num_kv_splits, num_heads_q, batch));
-    cute::print("*** shape: "); cute::print(shape.batch); cute::print(", "); cute::print(shape.num_heads_q); cute::print(", "); cute::print(shape.num_heads_kv); cute::print(", "); cute::print(shape.head_size_qk); cute::print(", "); cute::print(shape.head_size_vo); cute::print(", "); cute::print(shape.seq_len_qo); cute::print(", "); cute::print(shape.seq_len_kv); cute::print("\n");
+
+    printf("*** shape: batch: %d, num_heads_q: %d, num_heads_kv: %d, head_size_qk: %d, head_size_vo: %d, seq_len_qo: %d, seq_len_kv: %d\n",
+           shape.batch,
+           shape.num_heads_q,
+           shape.num_heads_kv,
+           shape.head_size_qk,
+           shape.head_size_vo,
+           shape.seq_len_qo,
+           shape.seq_len_kv);
 
     cute::print("stride_Q: "); cute::print(stride_Q); cute::print("\n");
     cute::print("stride_K: "); cute::print(stride_K); cute::print("\n");
     cute::print("stride_V: "); cute::print(stride_V); cute::print("\n");
     cute::print("stride_O: "); cute::print(stride_O); cute::print("\n");
+    cute::print("stride_Oaccum: "); cute::print(stride_Oaccum); cute::print("\n");
+    cute::print("stride_exp_sums: "); cute::print(stride_exp_sums); cute::print("\n");
+    cute::print("stride_max_logits: "); cute::print(stride_max_logits); cute::print("\n");
 
     return shape;
   }
@@ -224,6 +235,11 @@ struct DecodeKernelLauncher {
     const auto sycl_block = compat::dim3(block.x, block.y, block.z);
     const auto sycl_grid = compat::dim3(grid.x, grid.y, grid.z);
 
+    printf("launch FMHAKernel with grid (%d, %d, %d) block (%d, %d, %d) smem_size %d\n",
+           grid.x, grid.y, grid.z,
+           block.x, block.y, block.z,
+           smem_size);
+
     // Launch parameters depend on whether SYCL compiler supports work-group scratch memory extension
     compat::experimental::launch_properties launch_props {
       syclex::work_group_scratch_size(smem_size),
@@ -234,11 +250,17 @@ struct DecodeKernelLauncher {
     };
     compat::experimental::launch_policy policy{sycl_grid, sycl_block, launch_props, kernel_props};
     auto event = compat::experimental::launch<cutlass::device_kernel<FMHAKernel>, FMHAKernel>(policy, params);
+    
+    event.wait();
 
     dim3 const reduce_grid = ReductionSplitKernel::get_grid_shape(reduce_params);
     int reduce_smem_size = ReductionSplitKernel::SharedStorageSize;
     const auto reduce_sycl_block = compat::dim3(block.x, block.y, block.z);
     const auto reduce_sycl_grid = compat::dim3(reduce_grid.x, reduce_grid.y, reduce_grid.z);
+    printf("launch ReductionSplitKernel with grid (%d, %d, %d) block (%d, %d, %d) smem_size %d\n",
+           reduce_grid.x, reduce_grid.y, reduce_grid.z,
+           block.x, block.y, block.z,
+           reduce_smem_size);
     compat::experimental::launch_properties launch_props_reduce {
       syclex::work_group_scratch_size(reduce_smem_size),
     };
@@ -246,7 +268,6 @@ struct DecodeKernelLauncher {
 
     // wait for FA kernel finished
     // maybe no need wait here if launched with in-order queue
-    event.wait();
 
     auto reduce_event = compat::experimental::launch<cutlass::device_kernel<ReductionSplitKernel>, ReductionSplitKernel>(reduce_policy, reduce_params);
 
@@ -313,6 +334,10 @@ struct PagedDecodeConfig {
         MMA_Atom<MMAOperation>,
         Layout<TileShapePV>,
         SubgroupLayoutPV>::TiledMMA;
+    cute::print("SubgroupLayoutPV : "); cute::print(SubgroupLayoutPV{}); cute::print("\n");
+    cute::print("TileShapeOutput: "); cute::print(TileShapeOutput{}); cute::print("\n");
+    cute::print("TileShapeQK: "); cute::print(TileShapeQK{}); cute::print("\n");
+    cute::print("TileShapePV: "); cute::print(TileShapePV{}); cute::print("\n");
 
     static_assert(
         get<0>(TileShapeOutput{}) == get<0>(TileShapePV{}),
@@ -369,7 +394,7 @@ struct PagedDecodeConfig {
   template <bool... Bs>
   static void
   kernel_dispatch(sycl::queue& queue, const paged_decode_args_t& args) {
-    return run<cutlass::fmha::kernel::XeDecodeIndividualTileScheduler, Bs...>(
+    return run<cutlass::fmha::kernel::DecodeTileScheduler, Bs...>(
         queue, args);
   }
 
@@ -400,7 +425,7 @@ void decode_policy_dispatch(
         half_t,
         half_t,
         half_t,
-        half_t>::
+        float>::
         kernel_dispatch(
             queue,
             args,
@@ -420,7 +445,7 @@ void decode_policy_dispatch(
         bfloat16_t,
         bfloat16_t,
         bfloat16_t,
-        bfloat16_t>::
+        float>::
         kernel_dispatch(
             queue,
             args,
@@ -486,6 +511,14 @@ void cutlass_paged_decode_impl(
     total_seqlen_k = num_blocks * block_size;
   }
 
+  printf("batch_size: %d, num_heads_q: %d, num_heads_kv: %d, head_size: %d, max_seqlen_q: %d, max_seqlen_k: %d\n",
+         batch_size,
+         num_heads_q,
+         num_heads_kv,
+         head_size,
+         max_seqlen_q,
+         max_seqlen_k);
+
   if (is_local) {
     window_size_left = window_size_left == -1 ? max_seqlen_k : window_size_left;
     window_size_right =
@@ -521,7 +554,8 @@ void cutlass_paged_decode_impl(
       is_paged,   // paged
       is_causal,
       is_local,
-      is_sink};
+      is_sink,
+      num_kv_splits};
 
   CutlassType cuType = aten_to_Cutlass_dtype(query);
 

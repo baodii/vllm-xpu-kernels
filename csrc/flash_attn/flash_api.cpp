@@ -90,6 +90,9 @@ std::vector<at::Tensor> mha_varlen_fwd(
   if (max_seqlen_q == 1) {
     is_varlen = false;
     is_paged = false;
+    is_causal = false;
+    is_local = false;
+    is_sink = false;
     int batch = q.size(0);
     int num_heads_q = q.size(1);
     int seq_len_q = q.size(2);
@@ -106,7 +109,7 @@ std::vector<at::Tensor> mha_varlen_fwd(
     at::Tensor exp_sums = at::empty(
         {batch, num_heads_q, seq_len_q, num_kv_splits},
         q.options().dtype(at::kFloat).device(q.device()));
-    // out = out.to(at::kFloat);
+    out = out.to(at::kFloat);
     cutlass_paged_decode_impl(
       queue,
       q,
@@ -132,6 +135,12 @@ std::vector<at::Tensor> mha_varlen_fwd(
       is_sink,
       num_kv_splits);
     out = out.to(q_type);
+    std::cout << "max_logits: " << max_logits.shape() << std::endl;
+    std::cout << max_logits << std::endl;
+    std::cout << "exp_sums: " << std::endl;
+    std::cout << exp_sums << std::endl;
+    std::cout << "tmp_out: " << std::endl;
+    std::cout << tmp_out << std::endl;
   } 
   // else {
   //   cutlass_chunk_prefill_impl(

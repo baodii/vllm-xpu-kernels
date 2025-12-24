@@ -89,7 +89,7 @@ struct XeFHMAIndividualTileScheduler {
   }
 };
 
-struct XeDecodeIndividualTileScheduler {
+struct DecodeTileScheduler {
 
   struct Params {
     dim3 grid;
@@ -102,7 +102,7 @@ struct XeDecodeIndividualTileScheduler {
   Params params;
 
   CUTLASS_DEVICE
-  XeDecodeIndividualTileScheduler(Params const& params) : params(params) {}
+  DecodeTileScheduler(Params const& params) : params(params) {}
 
   template <class ProblemShape, class TileShape>
   static Params to_underlying_arguments(
@@ -122,7 +122,8 @@ struct XeDecodeIndividualTileScheduler {
       grid.z *= num_kv_splits;
       num_head = shape.num_heads_kv;
     }
-    std::cout << "XeDecodeIndividualTileScheduler Grid: (" << grid.x << ", " << grid.y << ", " << grid.z << ")\n";
+    printf("batch: %d, num_heads_kv: %d, num_kv_splits: %d\n", shape.batch, shape.num_heads_kv, num_kv_splits);
+    std::cout << "DecodeTileScheduler Grid: (" << grid.x << ", " << grid.y << ", " << grid.z << ")\n";
     return Params{grid, {num_head}, {shape.batch * num_head}, num_kv_splits};
   }
 
@@ -154,7 +155,7 @@ struct XeDecodeIndividualTileScheduler {
   }
 
   CUTLASS_DEVICE
-  XeDecodeIndividualTileScheduler& operator++() {
+  DecodeTileScheduler& operator++() {
     valid_ = false;
     return *this;
   }

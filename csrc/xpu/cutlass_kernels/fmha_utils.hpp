@@ -63,36 +63,36 @@ struct chunk_policy_head256 {
 };
 
 struct decode_policy_head64 {
-  using ShapeQK = Shape<_1, _256, _64>;
-  using ShapePV = Shape<_1, _32, _256>;
-  using ShapeOut = Shape<_1, _64>;
+  using ShapeQK = Shape<_8, _256, _64>;
+  using ShapePV = Shape<_8, _32, _256>;
+  using ShapeOut = Shape<_8, _64>;
   using SubgroupLayoutQK = Layout<Shape<_1, _16, _1>>;
 };
 
 struct decode_policy_head96 {
-  using ShapeQK = Shape<_1, _256, _64>;
-  using ShapePV = Shape<_1, _32, _256>;
-  using ShapeOut = Shape<_1, _96>;
+  using ShapeQK = Shape<_8, _256, _64>;
+  using ShapePV = Shape<_8, _32, _256>;
+  using ShapeOut = Shape<_8, _96>;
   using SubgroupLayoutQK = Layout<Shape<_1, _16, _1>>;
 };
 
 struct decode_policy_head128 {
-  using ShapeQK = Shape<_1, _256, _64>;
-  using ShapePV = Shape<_1, _32, _256>;
-  using ShapeOut = Shape<_1, _128>;
+  using ShapeQK = Shape<_8, _256, _64>;
+  using ShapePV = Shape<_8, _32, _256>;
+  using ShapeOut = Shape<_8, _128>;
   using SubgroupLayoutQK = Layout<Shape<_1, _16, _1>>;
 };
 
 struct decode_policy_head192 {
-  using ShapeQK = Shape<_1, _256, _64>;
-  using ShapePV = Shape<_1, _32, _256>;
-  using ShapeOut = Shape<_1, _192>;
+  using ShapeQK = Shape<_8, _256, _64>;
+  using ShapePV = Shape<_8, _32, _256>;
+  using ShapeOut = Shape<_8, _192>;
   using SubgroupLayoutQK = Layout<Shape<_1, _16, _1>>;
 };
 
 struct decode_policy_head256 {
-  using ShapeQK = Shape<_1, _256, _64>;
-  using ShapePV = Shape<_1, _32, _256>;
-  using ShapeOut = Shape<_1, _256>;
+  using ShapeQK = Shape<_8, _256, _64>;
+  using ShapePV = Shape<_8, _32, _256>;
+  using ShapeOut = Shape<_8, _256>;
   using SubgroupLayoutQK = Layout<Shape<_1, _16, _1>>;
 };

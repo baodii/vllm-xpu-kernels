@@ -152,13 +152,13 @@ def test_varlen_with_paged_kv(
     query = torch.randn(sum(query_lens),
                         num_query_heads,
                         head_size,
-                        dtype=dtype)
+                        dtype=dtype) * 10
     key_cache = torch.randn(num_blocks,
                             block_size,
                             num_kv_heads,
                             head_size,
-                            dtype=dtype)
-    value_cache = torch.randn_like(key_cache)
+                            dtype=dtype) * 10
+    value_cache = torch.randn_like(key_cache) * 10
     cu_query_lens = torch.tensor([0] + query_lens,
                                  dtype=torch.int32).cumsum(dim=0,
                                                            dtype=torch.int32)
@@ -219,6 +219,10 @@ def test_varlen_with_paged_kv(
     atol, rtol = 1.5e-2, 1e-2
     if q_dtype is not None:
         atol, rtol = 1.5e-1, 1.5e-1
+    output = output.squeeze()
+    ref_output = ref_output.squeeze()
+    # print(f"output shape: {output.shape}, ref_output shape: {ref_output.shape}")
+    # print(f"output: {output} \nref: {ref_output[7, :]}")
     torch.testing.assert_close(output.squeeze(), ref_output.squeeze(), atol=atol, rtol=rtol), \
         f"{torch.max(torch.abs(output - ref_output))}"
 
@@ -228,7 +232,7 @@ if __name__ == "__main__":
                               (8, 1),
                               128,
                               (-1, -1),
-                              torch.bfloat16,
+                              torch.float16,
                               64, None,
                               2048,
                               2,
