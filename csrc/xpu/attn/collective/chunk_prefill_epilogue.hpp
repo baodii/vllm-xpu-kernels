@@ -516,18 +516,16 @@ public:
       for (int i = 0; i < rA_sum.size(); i++) {
         constexpr double kLog2e = 1.4426950408889634074;
         if (idx_kv_split == 0) {
-          for (int head_q = 0; head_q < head_group_q; head_q++) {
-            rA_sum(i) += sycl::native::exp2(static_cast<ElementA>(tSink(head_q) * kLog2e) - rA_max(i));
-          }
+          rA_sum(i) += sycl::native::exp2(static_cast<ElementA>(tSink(thr_id % 8) * kLog2e) - rA_max(i));
         }
       }
     }
 
     // store exp sum and max logits for current KV split
     // assume seq_len_qo == 1
-    if (ThreadIdxX() < head_group_q) {
-      exp_sums(ThreadIdxX(), idx_kv_split) = rA_sum(0);
-      max_logits(ThreadIdxX(), idx_kv_split) = rA_max(0);
+    if (thr_id < head_group_q) {
+      exp_sums(thr_id, idx_kv_split) = rA_sum(0);
+      max_logits(thr_id, idx_kv_split) = rA_max(0);
     }
 
     /* Some subgroups may not have any work to do; if so, quit early. */

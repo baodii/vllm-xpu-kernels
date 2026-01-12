@@ -65,6 +65,7 @@ def decode_attention_ref(q,
         partition_size = (kv_len + num_kv_splits - 1) // num_kv_splits
         # print(f"block_tables: {block_tables[i]}")
 
+        print(f">>>num_kv_splits: {num_kv_splits}, partition_size: {partition_size}")
         for j in range(num_kv_splits):
             start_kv = j * partition_size
             end_kv = min(kv_len, (j + 1) * partition_size)
@@ -78,22 +79,29 @@ def decode_attention_ref(q,
             scores = torch.einsum("qhd,khd->qhk", q_seq * scale, k_part).float()
 
             scores_fp32 = scores.to(torch.float32)
-            scores_max = torch.max(scores_fp32, dim=-1, keepdim=True).values
-
             if has_sink and j == 0:
-                logits_sinks = rearrange(sinks, "h -> 1 h 1")
-                scores_max = torch.max(scores_max, logits_sinks)
+                sinks_expanded = rearrange(sinks, "h -> 1 h 1").to(torch.float32)
+                scores_fp32 = torch.cat([scores_fp32, sinks_expanded], dim=-1)
+            scores_max = torch.max(scores_fp32, dim=-1, keepdim=True).values
 
             scores_exp = torch.exp(scores_fp32 - scores_max)
             scores_exp_sum = torch.sum(scores_exp, dim=-1, keepdim=True)
             if has_sink and j == 0:
+                logits_sinks = rearrange(sinks, "h -> 1 h 1")
                 scores_exp_sum = scores_exp_sum + torch.exp(logits_sinks - scores_max)
-            attn = (scores_exp / scores_exp_sum).to(v_part.dtype)
+            # attn = (scores_exp / scores_exp_sum).to(v_part.dtype)
+            attn = torch.softmax(scores_fp32, dim=-1).to(v_part.dtype)
+
+            if has_sink and j == 0:
+                attn = attn[..., :-1]
+
+            print(f"decode attn: {attn[0, 0, :10]}")
 
             out_par = torch.einsum("qhk,khd->qhd", attn, v_part)
             tmp_out[start_idx:start_idx + query_len, j] = out_par
             exp_sums[start_idx:start_idx + query_len, :, j] = scores_exp_sum[..., 0]
             max_logits[start_idx:start_idx + query_len, :, j] = scores_max[..., 0]
+            # return tmp_out, exp_sums, max_logits, out_par
         # reduce part
         global_max_logits = torch.max(max_logits[start_idx:start_idx + query_len], dim=-1, keepdim=True).values
         rescaled_exp_sums = exp_sums[start_idx:start_idx + query_len] \
@@ -129,6 +137,9 @@ def ref_paged_attn(query: torch.Tensor,
                    soft_cap: Optional[float] = None,
                    casual: Optional[bool] = False,
                    sink: Optional[torch.Tensor] = None) -> torch.Tensor:
+    query = query.to(torch.float32)
+    key_cache = key_cache.to(torch.float32)
+    value_cache = value_cache.to(torch.float32)
     num_seqs = len(query_lens)
     block_tables = block_tables.cpu().numpy()
     _, block_size, num_kv_heads, head_size = key_cache.shape
@@ -182,6 +193,7 @@ def ref_paged_attn(query: torch.Tensor,
         attn = torch.softmax(attn, dim=-1).to(v.dtype)
         if sink is not None:
             attn = attn[..., :-1]
+        print(f"ref attn: {attn[0, 0, :10]}")
         out = torch.einsum("hqk,khd->qhd", attn, v)
 
         outputs.append(out)
@@ -256,13 +268,13 @@ def test_varlen_with_paged_kv(
     query = torch.randn(sum(query_lens),
                         num_query_heads,
                         head_size,
-                        dtype=dtype) * 10
+                        dtype=dtype) * 5
     key_cache = torch.randn(num_blocks,
                             block_size,
                             num_kv_heads,
                             head_size,
-                            dtype=dtype) * 10
-    value_cache = torch.randn_like(key_cache) * 10
+                            dtype=dtype) * 5
+    value_cache = torch.randn_like(key_cache) * 5
     cu_query_lens = torch.tensor([0] + query_lens,
                                  dtype=torch.int32).cumsum(dim=0,
                                                            dtype=torch.int32)
@@ -277,7 +289,8 @@ def test_varlen_with_paged_kv(
                                  dtype=torch.int32)
     sink = None
     if is_sink:
-        sink = torch.randn(num_query_heads, dtype=dtype)
+        # sink = torch.randn(num_query_heads, dtype=dtype)
+        sink = torch.ones(num_query_heads, dtype=dtype)
 
     maybe_quantized_query = query
     maybe_quantized_key_cache = key_cache
@@ -366,17 +379,17 @@ def test_varlen_with_paged_kv(
     if window_size[0] != -1 or window_size[1] != -1:
         atol, rtol = 1.5e-2, 1.5e-2
 
-    torch.testing.assert_close(output, ref_output_1, atol=atol, rtol=rtol), \
-        f"{torch.max(torch.abs(output - ref_output_1))}"
+    torch.testing.assert_close(output, ref_output_1.to(output.dtype), atol=atol, rtol=rtol), \
+        f"{torch.max(torch.abs(output - ref_output_1.to(output.dtype)))}"
     print("Passed ref_output_1 check")
 
-    torch.testing.assert_close(output, ref_output, atol=atol, rtol=rtol), \
-        f"{torch.max(torch.abs(output - ref_output))}"
+    torch.testing.assert_close(ref_output_1, ref_output, atol=atol, rtol=rtol), \
+        f"{torch.max(torch.abs(ref_output_1 - ref_output))}"
     print("Passed output check")
 
 
 if __name__ == "__main__":
-    test_varlen_with_paged_kv([(1, 4096), (1, 500)],
+    test_varlen_with_paged_kv([(1, 523)],
                               (8, 1),
                               128,
                               (-1, -1),

@@ -107,26 +107,26 @@ std::vector<at::Tensor> mha_varlen_fwd(
     
   if (max_seqlen_q > 1 || 
       window_size_left != -1 || window_size_right != -1) {
-    cutlass_chunk_prefill_interface(
-        queue,
-        q,
-        k,
-        v,
-        out,
-        block_table_,
-        cu_seqlens_q,
-        cu_seqlens_k,
-        max_seqlen_q,
-        max_seqlen_k,
-        softmax_scale,
-        softmax_sink_,
-        window_size_left,
-        window_size_right,
-        is_varlen,
-        is_paged,
-        is_causal,
-        is_local,
-        is_sink);
+    // cutlass_chunk_prefill_interface(
+    //     queue,
+    //     q,
+    //     k,
+    //     v,
+    //     out,
+    //     block_table_,
+    //     cu_seqlens_q,
+    //     cu_seqlens_k,
+    //     max_seqlen_q,
+    //     max_seqlen_k,
+    //     softmax_scale,
+    //     softmax_sink_,
+    //     window_size_left,
+    //     window_size_right,
+    //     is_varlen,
+    //     is_paged,
+    //     is_causal,
+    //     is_local,
+    //     is_sink);
   } else {
     out = out.to(at::kFloat);
     std::cout << "q shape: " << q.sizes() << std::endl;
