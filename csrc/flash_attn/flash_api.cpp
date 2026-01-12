@@ -96,7 +96,7 @@ std::vector<at::Tensor> mha_varlen_fwd(
   int block_size = k.size(1);
   at::Tensor tmp_out = at::empty(
       {num_tokens, num_heads_q * num_kv_splits, head_dim}, 
-      q.options().dtype(at::kFloat).device(q.device()));
+      q.options().device(q.device()));
   at::Tensor max_logits = at::empty(
       {num_tokens, num_heads_q, num_kv_splits},
       q.options().dtype(at::kFloat).device(q.device()));
@@ -128,12 +128,11 @@ std::vector<at::Tensor> mha_varlen_fwd(
     //     is_local,
     //     is_sink);
   } else {
-    out = out.to(at::kFloat);
-    std::cout << "q shape: " << q.sizes() << std::endl;
-    std::cout << "k shape: " << k.sizes() << std::endl;
-    std::cout << "v shape: " << v.sizes() << std::endl;
-    cutlass_paged_decode_interface(
-        queue,
+    // out = out.to(at::kFloat);
+    // std::cout << "q shape: " << q.sizes() << std::endl;
+    // std::cout << "k shape: " << k.sizes() << std::endl;
+    // std::cout << "v shape: " << v.sizes() << std::endl;
+    cutlass_paged_decode_interface( queue,
         q,
         k,
         v,
@@ -156,13 +155,7 @@ std::vector<at::Tensor> mha_varlen_fwd(
         is_local,
         is_sink,
         num_kv_splits);
-    std::cout << tmp_out.sizes() << std::endl;
-    // auto tmp_out_reshaped = tmp_out.view({num_tokens, num_kv_splits, num_heads_q, head_dim});
-    // std::cout << "tmp_out_reshaped: " << tmp_out_reshaped[0][0][0] << std::endl;
-    // std::cout << exp_sums << std::endl;
-    // std::cout << max_logits << std::endl;
-    // torch::save(tmp_out, "tmp_out.pt");
-    out = out.to(q_type);
+    // out = out.to(q_type);
   }
 
   if (return_softmax) {

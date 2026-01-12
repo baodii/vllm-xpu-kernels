@@ -389,6 +389,7 @@ def test_varlen_with_paged_kv(
 
 
 if __name__ == "__main__":
+<<<<<<< HEAD
     test_varlen_with_paged_kv([(1, 523)],
                               (8, 1),
                               128,
@@ -401,3 +402,15 @@ if __name__ == "__main__":
                               None,
                               True,
                               False)
+=======
+    test_decode_attn_with_paged_kv([(1, 37)],
+                                   (8, 2),
+                                   128,
+                                   torch.half,
+                                   64,
+                                   None,
+                                   2048,
+                                   2,
+                                   None,
+                                   True)
+>>>>>>> ce0a188 (fix datatype of decode attention)
