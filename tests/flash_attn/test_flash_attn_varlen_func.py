@@ -46,8 +46,9 @@ def decode_attention_ref(q,
     has_sink = sinks is not None
 
     start_idx = 0
-    output = torch.empty_like(q).to(q.device).to(torch.float32)
-    tmp_out = torch.empty((q.shape[0], num_kv_splits, q.shape[1], head_size), dtype=torch.float32).to(q.device)
+    output = torch.empty_like(q).to(q.device)
+    tmp_out = torch.empty((q.shape[0], num_kv_splits, q.shape[1], head_size)).to(q.device).to(q.dtype)
+    # tmp_out = torch.empty((q.shape[0], num_kv_splits, q.shape[1], head_size), dtype=torch.float32).to(q.device)
     exp_sums = torch.empty((q.shape[0], q.shape[1], num_kv_splits), dtype=torch.float32).to(q.device)
     max_logits = torch.empty_like(exp_sums).to(q.device)
     for i in range(num_seqs):
@@ -65,7 +66,7 @@ def decode_attention_ref(q,
         partition_size = (kv_len + num_kv_splits - 1) // num_kv_splits
         # print(f"block_tables: {block_tables[i]}")
 
-        print(f">>>num_kv_splits: {num_kv_splits}, partition_size: {partition_size}")
+        print(f">>> num_kv_splits: {num_kv_splits}, partition_size: {partition_size}")
         for j in range(num_kv_splits):
             start_kv = j * partition_size
             end_kv = min(kv_len, (j + 1) * partition_size)
@@ -76,12 +77,12 @@ def decode_attention_ref(q,
             k_part = repeat(k_part, "k h d -> k (h g) d", g=q.shape[1] // k.shape[1])
             v_part = repeat(v_part, "k h d -> k (h g) d", g=q.shape[1] // v.shape[1])
 
-            scores = torch.einsum("qhd,khd->qhk", q_seq * scale, k_part).float()
+            scores = torch.einsum("qhd,khd->qhk", q_seq * scale, k_part)
 
             scores_fp32 = scores.to(torch.float32)
-            if has_sink and j == 0:
-                sinks_expanded = rearrange(sinks, "h -> 1 h 1").to(torch.float32)
-                scores_fp32 = torch.cat([scores_fp32, sinks_expanded], dim=-1)
+            # if has_sink and j == 0:
+            #     sinks_expanded = rearrange(sinks, "h -> 1 h 1").to(torch.float32)
+            #     scores_fp32 = torch.cat([scores_fp32, sinks_expanded], dim=-1)
             scores_max = torch.max(scores_fp32, dim=-1, keepdim=True).values
 
             scores_exp = torch.exp(scores_fp32 - scores_max)
@@ -89,11 +90,11 @@ def decode_attention_ref(q,
             if has_sink and j == 0:
                 logits_sinks = rearrange(sinks, "h -> 1 h 1")
                 scores_exp_sum = scores_exp_sum + torch.exp(logits_sinks - scores_max)
-            # attn = (scores_exp / scores_exp_sum).to(v_part.dtype)
-            attn = torch.softmax(scores_fp32, dim=-1).to(v_part.dtype)
+            attn = (scores_exp / scores_exp_sum).to(v_part.dtype)
+            # attn = torch.softmax(scores_fp32, dim=-1).to(v_part.dtype)
 
-            if has_sink and j == 0:
-                attn = attn[..., :-1]
+            # if has_sink and j == 0:
+            #     attn = attn[..., :-1]
 
             print(f"decode attn: {attn[0, 0, :10]}")
 
@@ -101,7 +102,6 @@ def decode_attention_ref(q,
             tmp_out[start_idx:start_idx + query_len, j] = out_par
             exp_sums[start_idx:start_idx + query_len, :, j] = scores_exp_sum[..., 0]
             max_logits[start_idx:start_idx + query_len, :, j] = scores_max[..., 0]
-            # return tmp_out, exp_sums, max_logits, out_par
         # reduce part
         global_max_logits = torch.max(max_logits[start_idx:start_idx + query_len], dim=-1, keepdim=True).values
         rescaled_exp_sums = exp_sums[start_idx:start_idx + query_len] \
@@ -137,9 +137,9 @@ def ref_paged_attn(query: torch.Tensor,
                    soft_cap: Optional[float] = None,
                    casual: Optional[bool] = False,
                    sink: Optional[torch.Tensor] = None) -> torch.Tensor:
-    query = query.to(torch.float32)
-    key_cache = key_cache.to(torch.float32)
-    value_cache = value_cache.to(torch.float32)
+    # query = query.to(torch.float32)
+    # key_cache = key_cache.to(torch.float32)
+    # value_cache = value_cache.to(torch.float32)
     num_seqs = len(query_lens)
     block_tables = block_tables.cpu().numpy()
     _, block_size, num_kv_heads, head_size = key_cache.shape
@@ -164,7 +164,7 @@ def ref_paged_attn(query: torch.Tensor,
                                         dim=1).contiguous()
             v = torch.repeat_interleave(v, q.shape[1] // v.shape[1],
                                         dim=1).contiguous()
-        attn = torch.einsum("qhd,khd->hqk", q * scale, k).float()
+        attn = torch.einsum("qhd,khd->hqk", q.float() * scale, k.float()).float()
         empty_mask = torch.ones(query_len, kv_len)
         mask = torch.triu(empty_mask, diagonal=kv_len - query_len + 1).bool()
         if window_size_right > 0 or window_size_left > 0:
@@ -381,17 +381,20 @@ def test_varlen_with_paged_kv(
 
     torch.testing.assert_close(output, ref_output_1.to(output.dtype), atol=atol, rtol=rtol), \
         f"{torch.max(torch.abs(output - ref_output_1.to(output.dtype)))}"
+    print("Passed output ref_output_1 check")
+
+    torch.testing.assert_close(ref_output, ref_output_1.to(ref_output.dtype), atol=atol, rtol=rtol), \
+        f"{torch.max(torch.abs(ref_output - ref_output_1.to(output.dtype)))}"
     print("Passed ref_output_1 check")
 
-    torch.testing.assert_close(ref_output_1, ref_output, atol=atol, rtol=rtol), \
-        f"{torch.max(torch.abs(ref_output_1 - ref_output))}"
+    torch.testing.assert_close(output, ref_output.to(output.dtype), atol=atol, rtol=rtol), \
+        f"{torch.max(torch.abs(output - ref_output))}"
     print("Passed output check")
 
 
 if __name__ == "__main__":
-<<<<<<< HEAD
-    test_varlen_with_paged_kv([(1, 523)],
-                              (8, 1),
+    test_varlen_with_paged_kv([(1, 523), (1, 37), (1, 2011)],
+                              (8, 2),
                               128,
                               (-1, -1),
                               torch.float16,
@@ -402,15 +405,3 @@ if __name__ == "__main__":
                               None,
                               True,
                               False)
-=======
-    test_decode_attn_with_paged_kv([(1, 37)],
-                                   (8, 2),
-                                   128,
-                                   torch.half,
-                                   64,
-                                   None,
-                                   2048,
-                                   2,
-                                   None,
-                                   True)
->>>>>>> ce0a188 (fix datatype of decode attention)
