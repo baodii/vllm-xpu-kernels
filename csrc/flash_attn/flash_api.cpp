@@ -105,7 +105,7 @@ std::vector<at::Tensor> mha_varlen_fwd(
   bool is_local = (window_size_left != -1) | (window_size_right != -1);
   bool is_sink = softmax_sink_.has_value();
 
-  if (max_seqlen_q > 1 || is_local || !is_paged || is_fp8kv) {
+  if (max_seqlen_q > 1 || is_local || !is_paged) {
     at::Tensor seqlens_k = is_paged ? *seqused_k : cu_seqlens_k;
 
     cutlass_chunk_prefill_interface(
@@ -166,6 +166,8 @@ std::vector<at::Tensor> mha_varlen_fwd(
         seqlens_k,
         max_seqlen_q,
         max_seqlen_k,
+        k_scale,
+        v_scale,
         softmax_scale,
         softmax_sink_,
         window_size_left,
