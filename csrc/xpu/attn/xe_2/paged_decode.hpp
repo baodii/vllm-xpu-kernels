@@ -66,6 +66,17 @@ struct paged_decode_args_t {
   bool is_local = false;
   bool is_sink = false;
   int num_kv_splits = 1;
+  // Actual tensor strides for K/V cache (support non-contiguous layouts, e.g.
+  // MLA). stride_k_token: stride between consecutive tokens in K cache.
+  // stride_k_head:  stride between heads in K cache.
+  // stride_v_token: stride between consecutive tokens in V cache.
+  // stride_v_head:  stride between heads in V cache.
+  // These MUST be explicitly set before use; 0 is not a valid stride.
+  // Use cutlass_paged_decode_impl() which sets these from tensor strides.
+  int64_t stride_k_token = 0;
+  int64_t stride_k_head = 0;
+  int64_t stride_v_token = 0;
+  int64_t stride_v_head = 0;
 };
 
 template <class FMHAKernel, class ReductionSplitKernel, bool isVarLen>
@@ -137,12 +148,16 @@ struct DecodeKernelLauncher {
     stride_Q = cutlass::make_cute_packed_stride(
         StrideQ{},
         cute::make_shape(seq_len_qo, head_size_qk, num_heads_q, batch));
-    stride_K = cutlass::make_cute_packed_stride(
-        StrideK{},
-        cute::make_shape(seq_len_kv, head_size_qk, num_heads_kv, batch));
-    stride_V = cutlass::make_cute_packed_stride(
-        StrideV{},
-        cute::make_shape(head_size_vo, seq_len_kv, num_heads_kv, batch));
+    stride_K = make_stride(
+        (int)args.stride_k_token,
+        _1{},
+        (int)args.stride_k_head,
+        (int)args.stride_k_token * seq_len_kv);
+    stride_V = make_stride(
+        _1{},
+        (int)args.stride_v_token,
+        (int)args.stride_v_head,
+        (int)args.stride_v_token * seq_len_kv);
     stride_O = cutlass::make_cute_packed_stride(
         StrideO{},
         cute::make_shape(seq_len_qo, head_size_vo, num_heads_q, batch));

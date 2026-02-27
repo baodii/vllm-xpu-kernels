@@ -118,6 +118,48 @@ void cutlass_paged_decode_impl(
         window_size_right == -1 ? max_seqlen_k : window_size_right;
   }
 
+  // Extract actual K/V cache strides to support non-contiguous layouts
+  // (e.g., MLA where K and V are views of a shared [num_blocks, block_size,
+  // kv_lora_rank + pe_dim] buffer with non-packed strides).
+  int64_t stride_k_token, stride_k_head, stride_v_token, stride_v_head;
+  if (is_paged) {
+    // key_cache: [num_blocks, block_size, num_heads, head_size]
+    stride_k_token = key_cache.stride(1);
+    stride_k_head = key_cache.stride(2);
+    stride_v_token = value_cache.stride(1);
+    stride_v_head = value_cache.stride(2);
+  } else if (is_varlen) {
+    // key_cache: [total_seqlen_k, num_heads, head_size]
+    stride_k_token = key_cache.stride(0);
+    stride_k_head = key_cache.stride(1);
+    stride_v_token = value_cache.stride(0);
+    stride_v_head = value_cache.stride(1);
+  } else {
+    // non-paged non-varlen: this path is not used from flash_api.cpp (which
+    // always sets is_varlen=true). Fail explicitly to avoid silent incorrect
+    // results from uninitialized strides.
+    stride_k_token = stride_k_head = stride_v_token = stride_v_head = 0;
+    TORCH_CHECK(
+        false,
+        "non-paged non-varlen path is not supported by cutlass_paged_decode_impl");
+  }
+
+  // Ensure stride values fit in int32 as required by the CuTe stride types
+  // (StrideK/StrideV use int, not int64_t).
+  TORCH_CHECK(
+      stride_k_token <= std::numeric_limits<int>::max() &&
+          stride_k_head <= std::numeric_limits<int>::max() &&
+          stride_v_token <= std::numeric_limits<int>::max() &&
+          stride_v_head <= std::numeric_limits<int>::max(),
+      "K/V cache stride values exceed int32 range: stride_k_token=",
+      stride_k_token,
+      ", stride_k_head=",
+      stride_k_head,
+      ", stride_v_token=",
+      stride_v_token,
+      ", stride_v_head=",
+      stride_v_head);
+
   paged_decode_args_t args = {
       query.data_ptr(),
       key_cache.data_ptr(),
@@ -148,7 +190,11 @@ void cutlass_paged_decode_impl(
       is_causal,
       is_local,
       is_sink,
-      num_kv_splits};
+      num_kv_splits,
+      stride_k_token,
+      stride_k_head,
+      stride_v_token,
+      stride_v_head};
 
   CutlassDType cuType = aten_to_dtype(query);
 
