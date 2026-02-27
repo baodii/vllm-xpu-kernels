@@ -203,3 +203,4 @@ shellcheck*/
 
 # benchmark kernel config
 configs
+_codeql_detected_source_root
