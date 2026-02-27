@@ -19,6 +19,8 @@ void cutlass_paged_decode_xe2(
     const at::Tensor& cu_seqlens_k,
     int max_seqlen_q,
     int max_seqlen_k,
+    float k_scale,
+    float v_scale,
     double sm_scale,
     std::optional<const at::Tensor>& sm_sink_,
     int window_size_left,
@@ -43,6 +45,8 @@ void cutlass_paged_decode_xe2(
       cu_seqlens_k,
       max_seqlen_q,
       max_seqlen_k,
+      k_scale,
+      v_scale,
       sm_scale,
       sm_sink_,
       window_size_left,
@@ -70,6 +74,8 @@ void cutlass_paged_decode_impl(
     const at::Tensor& cu_seqlens_k,
     int max_seqlen_q,
     int max_seqlen_k,
+    float k_scale,
+    float v_scale,
     double sm_scale,
     std::optional<const at::Tensor>& sm_sink_,
     int window_size_left,
@@ -133,6 +139,8 @@ void cutlass_paged_decode_impl(
       max_seqlen_k,
       total_seqlen_q,
       total_seqlen_k,
+      k_scale,
+      v_scale,
       static_cast<float>(sm_scale),
       is_sink ? sm_sink_.value().data_ptr() : nullptr,
       batch_size,
@@ -150,7 +158,7 @@ void cutlass_paged_decode_impl(
       is_sink,
       num_kv_splits};
 
-  CutlassDType cuType = aten_to_dtype(query);
+  CutlassQKType cuQKType = aten_to_Cutlass_qk_dtype(query, key_cache);
 
   static constexpr int max_head_size = 256;
   TORCH_CHECK(
@@ -171,9 +179,9 @@ void cutlass_paged_decode_impl(
   int num_q_group_size = num_heads_q / num_heads_kv;
 
   if (num_q_group_size <= 8) {
-    dispatch_by_head_size<_8>(head_case, queue, cuType, args);
+    dispatch_by_head_size<_8>(head_case, queue, cuQKType, args);
   } else if (num_q_group_size <= 16) {
-    dispatch_by_head_size<_16>(head_case, queue, cuType, args);
+    dispatch_by_head_size<_16>(head_case, queue, cuQKType, args);
   } else {
     TORCH_CHECK(false, "Unsupported num_heads_q / num_heads_kv for fmha");
   }
