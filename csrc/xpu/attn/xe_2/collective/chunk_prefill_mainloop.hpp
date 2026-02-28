@@ -194,7 +194,7 @@ struct FMHAFwdMainloop<
     ElementS const scale_v;
 
     // Paged KV Cache
-    int* ptr_page_table;
+    const int* ptr_page_table;
     int page_size;
     int max_pages_per_seq;
     int total_seqlen_kv;
@@ -234,6 +234,19 @@ struct FMHAFwdMainloop<
 
   CUTLASS_HOST_DEVICE static bool can_implement(Arguments const&) {
     return true;
+  }
+
+  CUTLASS_DEVICE int get_paged_idx(int K, int idx_b) {
+    int tiles_per_page = params.page_size / get<1>(TileShapeQK{});
+    int b_offset = idx_b * params.max_pages_per_seq;
+    int page_local_idx = K * get<1>(TileShapeQK{}) / params.page_size;
+
+    // Clamp page_local_idx to the valid range [0, max_pages_per_seq - 1]
+    int clamped_page_local_idx =
+        std::max(0, std::min(page_local_idx, params.max_pages_per_seq - 1));
+
+    return params.ptr_page_table[b_offset + clamped_page_local_idx] * tiles_per_page +
+           K % tiles_per_page;
   }
 
   template <typename QVCoord>
