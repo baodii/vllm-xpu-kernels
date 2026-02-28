@@ -129,6 +129,10 @@ MINI_PYTEST_PARAMS = {
         "num_heads": [(8, 2)],
         "head_size": [64, 128],
         "num_blocks": [64],
+    },
+    "test_decode_with_paged_kv_mla": {
+        "seq_lens": [[(1, 1025), (1, 523), (1, 37)]],
+        "num_blocks": [64],
     }
 }
 
@@ -410,6 +414,126 @@ def test_decode_with_paged_kv(
     atol, rtol = 1e-2, 1e-2
     if q_dtype is not None:
         atol, rtol = 1.5e-1, 1.5e-1
+    torch.testing.assert_close(output, ref_output, atol=atol, rtol=rtol), \
+        f"{torch.max(torch.abs(output - ref_output))}"
+    torch.xpu.empty_cache()
+
+
+# MLA (Multi-head Latent Attention) decode test parameters.
+# kv_lora_rank is the compressed latent dimension (head_size in the kernel).
+# qk_rope_head_dim is the rotary positional encoding dimension stored alongside
+# the latent in the shared kv_cache buffer.  The sum (entry_size) is the actual
+# per-token stride, making the layout non-packed:
+#   stride(1) = entry_size  !=  num_kv_heads * kv_lora_rank  (packed stride)
+KV_LORA_RANKS = [128]
+QK_ROPE_HEAD_DIMS = [64]
+
+
+@pytest.mark.parametrize("seq_lens",
+                         [[(1, 1025)], [(1, 523), (1, 37), (1, 2011)]])
+@pytest.mark.parametrize("kv_lora_rank", KV_LORA_RANKS)
+@pytest.mark.parametrize("qk_rope_head_dim", QK_ROPE_HEAD_DIMS)
+@pytest.mark.parametrize("block_size", BLOCK_SIZES)
+@pytest.mark.parametrize("dtype", DTYPES)
+@pytest.mark.parametrize("num_blocks", NUM_BLOCKS)
+@torch.inference_mode()
+def test_decode_with_paged_kv_mla(
+    seq_lens: list[tuple[int, int]],
+    kv_lora_rank: int,
+    qk_rope_head_dim: int,
+    block_size: int,
+    dtype: torch.dtype,
+    num_blocks: int,
+) -> None:
+    """Test paged decode with MLA (Multi-head Latent Attention) KV layout.
+
+    In MLA architectures (e.g. DeepSeek-V2/V3), K and V are non-contiguous
+    views into a shared kv_cache buffer of shape
+    [num_blocks, block_size, kv_lora_rank + qk_rope_head_dim].
+
+    K/V views have shape [num_blocks, block_size, 1, kv_lora_rank] with
+    strides [block_size*entry_size, entry_size, kv_lora_rank, 1], so
+    stride(1) = entry_size != kv_lora_rank (the packed value).  This tests
+    that the kernel correctly reads actual tensor strides rather than assuming
+    packed layout.
+    """
+    torch.set_default_device("xpu")
+    torch.xpu.set_device("xpu:0")
+    torch.manual_seed(42)
+
+    num_seqs = len(seq_lens)
+    query_lens = [x[0] for x in seq_lens]
+    kv_lens = [x[1] for x in seq_lens]
+
+    # MLA uses 1 KV head; query heads are GQA-expanded from that single head.
+    num_kv_heads = 1
+    num_query_heads = 8
+    head_size = kv_lora_rank
+
+    max_query_len = max(query_lens)
+    max_kv_len = max(kv_lens)
+    scale = head_size**-0.5
+
+    query = torch.randn(sum(query_lens),
+                        num_query_heads,
+                        head_size,
+                        dtype=dtype)
+
+    # Shared kv_cache: [num_blocks, block_size, kv_lora_rank + qk_rope_head_dim]
+    entry_size = kv_lora_rank + qk_rope_head_dim
+    kv_cache = torch.randn(num_blocks, block_size, entry_size, dtype=dtype)
+
+    # K and V are non-contiguous views into kv_cache.
+    # shape:   [num_blocks, block_size, 1, kv_lora_rank]
+    # strides: [block_size*entry_size, entry_size, kv_lora_rank, 1]
+    key_cache = kv_cache[:, :, :kv_lora_rank].unsqueeze(2)
+    value_cache = kv_cache[:, :, :kv_lora_rank].unsqueeze(2)
+
+    # Confirm non-packed token stride — this is the MLA invariant under test.
+    assert key_cache.stride(1) == entry_size, (
+        f"Expected non-packed token stride {entry_size}, "
+        f"got {key_cache.stride(1)}")
+    assert key_cache.stride(1) != num_kv_heads * kv_lora_rank, (
+        "MLA test requires non-packed token stride; "
+        "increase qk_rope_head_dim so entry_size > kv_lora_rank")
+
+    cu_query_lens = torch.tensor([0] + query_lens,
+                                 dtype=torch.int32).cumsum(dim=0,
+                                                           dtype=torch.int32)
+    seq_k = torch.tensor(kv_lens, dtype=torch.int32)
+
+    max_num_blocks_per_seq = (max_kv_len + block_size - 1) // block_size
+    block_tables = torch.randint(0,
+                                 num_blocks,
+                                 (num_seqs, max_num_blocks_per_seq),
+                                 dtype=torch.int32)
+
+    output = flash_attn_varlen_func(query,
+                                    key_cache,
+                                    value_cache,
+                                    max_query_len,
+                                    cu_query_lens,
+                                    max_kv_len,
+                                    seqused_k=seq_k,
+                                    softmax_scale=scale,
+                                    causal=False,
+                                    block_table=block_tables,
+                                    window_size=(-1, -1))
+
+    ref_output = ref_paged_attn(query=query,
+                                key_cache=key_cache,
+                                value_cache=value_cache,
+                                query_lens=query_lens,
+                                kv_lens=kv_lens,
+                                block_tables=block_tables,
+                                scale=scale,
+                                casual=False,
+                                is_paged=True,
+                                sink=None,
+                                window_size_left=-1,
+                                window_size_right=-1)
+
+    atol, rtol = 1e-2, 1e-2
     torch.testing.assert_close(output, ref_output, atol=atol, rtol=rtol), \
         f"{torch.max(torch.abs(output - ref_output))}"
     torch.xpu.empty_cache()
