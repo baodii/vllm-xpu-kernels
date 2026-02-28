@@ -35,6 +35,18 @@ using decode_policy_q16_h128 = decode_policy_qpacked_head<_16, _128>;
 using decode_policy_q16_h192 = decode_policy_qpacked_head<_16, _192>;
 using decode_policy_q16_h256 = decode_policy_qpacked_head<_16, _256>;
 
+// b16 policies for block_size <= 16
+using decode_policy_q8_h64_b16 = decode_policy_qpacked_head_b16<_8, _64>;
+using decode_policy_q8_h96_b16 = decode_policy_qpacked_head_b16<_8, _96>;
+using decode_policy_q8_h128_b16 = decode_policy_qpacked_head_b16<_8, _128>;
+using decode_policy_q8_h192_b16 = decode_policy_qpacked_head_b16<_8, _192>;
+using decode_policy_q8_h256_b16 = decode_policy_qpacked_head_b16<_8, _256>;
+using decode_policy_q16_h64_b16 = decode_policy_qpacked_head_b16<_16, _64>;
+using decode_policy_q16_h96_b16 = decode_policy_qpacked_head_b16<_16, _96>;
+using decode_policy_q16_h128_b16 = decode_policy_qpacked_head_b16<_16, _128>;
+using decode_policy_q16_h192_b16 = decode_policy_qpacked_head_b16<_16, _192>;
+using decode_policy_q16_h256_b16 = decode_policy_qpacked_head_b16<_16, _256>;
+
 struct paged_decode_args_t {
   void* query;
   void* key;

@@ -94,3 +94,16 @@ struct decode_policy_qpacked_head {
   using ShapeOut = Shape<q_packed, head_dim>;
   using SubgroupLayoutQK = Layout<Shape<_1, DECODE_NUM_SG, _1>>;
 };
+
+// Decode policy for small block sizes (block_size <= 16).
+// KV tile = 16 so that tiles_per_page >= 1 when page_size = 16.
+// Subgroups are distributed along the Q dimension instead of KV.
+#define DECODE_KV_TILE_B16 _16
+
+template <class q_packed, class head_dim>
+struct decode_policy_qpacked_head_b16 {
+  using ShapeQK = Shape<q_packed, DECODE_KV_TILE_B16, _64>;
+  using ShapePV = Shape<q_packed, _32, DECODE_KV_TILE_B16>;
+  using ShapeOut = Shape<q_packed, head_dim>;
+  using SubgroupLayoutQK = Layout<Shape<DECODE_NUM_SG, _1, _1>>;
+};

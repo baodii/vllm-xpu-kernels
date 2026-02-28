@@ -45,9 +45,24 @@ function(paged_decode_configure FILENAME_SUFFIX)
   set(policy_16_192 "decode_policy_q16_h192")
   set(policy_16_256 "decode_policy_q16_h256")
 
+  # Q-group size 8 policies for small block sizes (b16)
+  set(policy_8_64_b16 "decode_policy_q8_h64_b16")
+  set(policy_8_96_b16 "decode_policy_q8_h96_b16")
+  set(policy_8_128_b16 "decode_policy_q8_h128_b16")
+  set(policy_8_192_b16 "decode_policy_q8_h192_b16")
+  set(policy_8_256_b16 "decode_policy_q8_h256_b16")
+
+  # Q-group size 16 policies for small block sizes (b16)
+  set(policy_16_64_b16 "decode_policy_q16_h64_b16")
+  set(policy_16_96_b16 "decode_policy_q16_h96_b16")
+  set(policy_16_128_b16 "decode_policy_q16_h128_b16")
+  set(policy_16_192_b16 "decode_policy_q16_h192_b16")
+  set(policy_16_256_b16 "decode_policy_q16_h256_b16")
+
   # Configuration space dimensions
   set(qgroup_list "8" "16")
   set(headsize_list "64" "96" "128" "192" "256")
+  set(blocktile_list "" "_b16")
 
   # =============================================================================
   # Generate Kernel Sources
@@ -56,27 +71,34 @@ function(paged_decode_configure FILENAME_SUFFIX)
 
   foreach(IMPL_QGROUP ${qgroup_list})
     foreach(IMPL_HEADSIZE ${headsize_list})
-      # Lookup policy name from mapping
-      set(IMPL_POLICY ${policy_${IMPL_QGROUP}_${IMPL_HEADSIZE}})
+      foreach(IMPL_BLOCKTILE ${blocktile_list})
+        # Lookup policy name from mapping
+        set(IMPL_POLICY ${policy_${IMPL_QGROUP}_${IMPL_HEADSIZE}${IMPL_BLOCKTILE}})
 
-      foreach(IMPL_KISCAUSAL ${L_BOOLS})
-        foreach(IMPL_KISLOCAL ${L_BOOLS})
-          foreach(IMPL_KISSINK ${L_BOOLS})
-            # Construct unique filename suffix: e.g., _q8_h64_fff
-            set(FILE_SUFFIX "_q${IMPL_QGROUP}_h${IMPL_HEADSIZE}_")
-            set(FILE_SUFFIX "${FILE_SUFFIX}${BOOL_FLAG_${IMPL_KISCAUSAL}}")
-            set(FILE_SUFFIX "${FILE_SUFFIX}${BOOL_FLAG_${IMPL_KISLOCAL}}")
-            set(FILE_SUFFIX "${FILE_SUFFIX}${BOOL_FLAG_${IMPL_KISSINK}}")
+        foreach(IMPL_KISCAUSAL ${L_BOOLS})
+          foreach(IMPL_KISLOCAL ${L_BOOLS})
+            foreach(IMPL_KISSINK ${L_BOOLS})
+              # Construct unique filename suffix: e.g., _q8_h64_fff or
+              # _q8_h64_b16_fff
+              set(FILE_SUFFIX
+                  "_q${IMPL_QGROUP}_h${IMPL_HEADSIZE}${IMPL_BLOCKTILE}_")
+              set(FILE_SUFFIX
+                  "${FILE_SUFFIX}${BOOL_FLAG_${IMPL_KISCAUSAL}}")
+              set(FILE_SUFFIX
+                  "${FILE_SUFFIX}${BOOL_FLAG_${IMPL_KISLOCAL}}")
+              set(FILE_SUFFIX
+                  "${FILE_SUFFIX}${BOOL_FLAG_${IMPL_KISSINK}}")
 
-            # Generate .cpp file from template
-            configure_file(${FILENAME_SUFFIX}.cpp.in
-                           "${FILENAME_SUFFIX}${FILE_SUFFIX}.cpp")
+              # Generate .cpp file from template
+              configure_file(${FILENAME_SUFFIX}.cpp.in
+                             "${FILENAME_SUFFIX}${FILE_SUFFIX}.cpp")
 
-            # Add to output list
-            list(
-              APPEND GEN_KERNEL_SRCS
-              "${CMAKE_CURRENT_BINARY_DIR}/${FILENAME_SUFFIX}${FILE_SUFFIX}.cpp"
-            )
+              # Add to output list
+              list(
+                APPEND GEN_KERNEL_SRCS
+                "${CMAKE_CURRENT_BINARY_DIR}/${FILENAME_SUFFIX}${FILE_SUFFIX}.cpp"
+              )
+            endforeach()
           endforeach()
         endforeach()
       endforeach()

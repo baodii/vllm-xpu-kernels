@@ -170,11 +170,22 @@ void cutlass_paged_decode_impl(
   int head_case = get_head_size_case(args.head_size);
   int num_q_group_size = num_heads_q / num_heads_kv;
 
-  if (num_q_group_size <= 8) {
-    dispatch_by_head_size<_8>(head_case, queue, cuType, args);
-  } else if (num_q_group_size <= 16) {
-    dispatch_by_head_size<_16>(head_case, queue, cuType, args);
+  if (args.block_size > 0 && args.block_size < 64) {
+    // Small block size path (e.g., block_size=16)
+    if (num_q_group_size <= 8) {
+      dispatch_by_head_size_b16<_8>(head_case, queue, cuType, args);
+    } else if (num_q_group_size <= 16) {
+      dispatch_by_head_size_b16<_16>(head_case, queue, cuType, args);
+    } else {
+      TORCH_CHECK(false, "Unsupported num_heads_q / num_heads_kv for fmha");
+    }
   } else {
-    TORCH_CHECK(false, "Unsupported num_heads_q / num_heads_kv for fmha");
+    if (num_q_group_size <= 8) {
+      dispatch_by_head_size<_8>(head_case, queue, cuType, args);
+    } else if (num_q_group_size <= 16) {
+      dispatch_by_head_size<_16>(head_case, queue, cuType, args);
+    } else {
+      TORCH_CHECK(false, "Unsupported num_heads_q / num_heads_kv for fmha");
+    }
   }
 }

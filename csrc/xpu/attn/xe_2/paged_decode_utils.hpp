@@ -57,6 +57,38 @@ inline void dispatch_by_head_size(
   }
 }
 
+template <class QGroup>
+inline void dispatch_by_head_size_b16(
+    const int head_case,
+    sycl::queue& queue,
+    CutlassDType cuType,
+    const paged_decode_args_t& args) {
+  switch (head_case) {
+    case 0:
+      decode_policy_dispatch_func<decode_policy_qpacked_head_b16<QGroup, _64>>(
+          queue, cuType, args, args.is_causal, args.is_local, args.is_sink);
+      break;
+    case 1:
+      decode_policy_dispatch_func<decode_policy_qpacked_head_b16<QGroup, _96>>(
+          queue, cuType, args, args.is_causal, args.is_local, args.is_sink);
+      break;
+    case 2:
+      decode_policy_dispatch_func<decode_policy_qpacked_head_b16<QGroup, _128>>(
+          queue, cuType, args, args.is_causal, args.is_local, args.is_sink);
+      break;
+    case 3:
+      decode_policy_dispatch_func<decode_policy_qpacked_head_b16<QGroup, _192>>(
+          queue, cuType, args, args.is_causal, args.is_local, args.is_sink);
+      break;
+    case 4:
+      decode_policy_dispatch_func<decode_policy_qpacked_head_b16<QGroup, _256>>(
+          queue, cuType, args, args.is_causal, args.is_local, args.is_sink);
+      break;
+    default:
+      TORCH_CHECK(false, "Unsupported head size for fmha");
+  }
+}
+
 void cutlass_paged_decode_impl(
     sycl::queue& queue,
     const at::Tensor& query,      // [seq_q, heads, head_size]
