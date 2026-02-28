@@ -674,30 +674,17 @@ class ReduceSplitK {
       global_max_logits =
           sycl::group_broadcast(get_work_group<1>(), global_max_logits, 0);
 
-      // step 2: compute global_exp_sums once outside the idx loop
-      global_exp_sums = 0;
-      for (int i = 0; i < num_kv_splits; ++i) {
-        if (i * num_blocks_per_split >= k_blocks) {
-          break;
-        }
-        ElementLSE local_max_logit = shared_storage.max_logits_slm_array[i];
-        ElementLSE local_exp_sum = shared_storage.exp_sums_slm_array[i];
-        ElementLSE rescale =
-            sycl::native::exp2(local_max_logit - global_max_logits);
-        global_exp_sums += local_exp_sum * rescale;
-      }
-      ElementLSE inv_global_exp_sums = 1. / global_exp_sums;
-
-      // step 3: rescale Oaccum and write back to O
       for (int idx = thr_id; idx < s.head_size_vo;
            idx += SGPerWG::value * intel::sg_size) {
         ElementLSE acc = 0;
+        global_exp_sums = 0;
         for (int i = 0; i < num_kv_splits; ++i) {
           if (i * num_blocks_per_split >= k_blocks) {
             break;
           }
           ElementLSE local_max_logit = shared_storage.max_logits_slm_array[i];
           ElementLSE local_exp_sum = shared_storage.exp_sums_slm_array[i];
+
           ElementLSE rescale =
               sycl::native::exp2(local_max_logit - global_max_logits);
 
@@ -708,7 +695,12 @@ class ReduceSplitK {
                   Oaccum(seq_idx, idx, i * num_heads_q + head_q, l_coord)) *
               local_exp_sum;
           acc += adjusted_o_accum * rescale;
+
+          // update global exp sum
+          global_exp_sums += local_exp_sum * rescale;
         }
+
+        ElementLSE inv_global_exp_sums = 1. / global_exp_sums;
 
         acc *= inv_global_exp_sums;
         O(seq_idx, idx, head_q, l_coord) = static_cast<ElementO>(acc);
