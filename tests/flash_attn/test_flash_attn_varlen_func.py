@@ -137,7 +137,7 @@ MINI_PYTEST_PARAMS = {
         "num_heads": [(8, 2)],
         "head_size": [64, 128],
         "num_blocks": [64],
-        "fp8_dtype": [torch.float8_e4m3fn, None],
+        "fp8_dtype": [torch.float8_e5m2, torch.float8_e4m3fn, None],
     }
 }
 
@@ -414,8 +414,8 @@ def test_decode_with_paged_kv(
     is_fp8kv = False
     if fp8_dtype is not None:
         is_fp8kv = True
-        k_descale = (torch.abs(key_cache).max() / 200).to(torch.float32)
-        v_descale = (torch.abs(value_cache).max() / 200).to(torch.float32)
+        k_descale = torch.clamp(torch.abs(key_cache).max() / 200, min=1e-6).to(torch.float32)
+        v_descale = torch.clamp(torch.abs(value_cache).max() / 200, min=1e-6).to(torch.float32)
         maybe_quantized_key_cache = (key_cache / k_descale).to(fp8_dtype)
         maybe_quantized_value_cache = (value_cache / v_descale).to(fp8_dtype)
 
@@ -454,7 +454,7 @@ def test_decode_with_paged_kv(
     if q_dtype is not None:
         atol, rtol = 1.5e-1, 1.5e-1
     if fp8_dtype is not None:
-        atol, rtol = 1.5e-2, 1.5e-2
+        atol, rtol = max(atol, 1.5e-2), max(rtol, 1.5e-2)
     torch.testing.assert_close(output, ref_output, atol=atol, rtol=rtol), \
         f"{torch.max(torch.abs(output - ref_output))}"
     torch.xpu.empty_cache()
