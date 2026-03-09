@@ -409,6 +409,7 @@ struct FMHAFwdMainloop<
         reorder(tQrQ, tSrQ);
         reorder(tKrK, tSrK);
         if constexpr (Fp8KV) {
+          CUTLASS_PRAGMA_UNROLL
           for (int i = 0; i < tSrK.size(); ++i) {
             tSrK(i) =
                 static_cast<ElementQ>(scale_k * static_cast<float>(tSrK(i)));
@@ -873,6 +874,7 @@ struct DecodeFwdMainloop<
         reorder(tQrQ, tSrQ);
         reorder(tKrK, tSrK);
         if constexpr (Fp8KV) {
+          CUTLASS_PRAGMA_UNROLL
           for (int i = 0; i < tSrK.size(); ++i) {
             tSrK(i) =
                 static_cast<ElementQ>(scale_k * static_cast<float>(tSrK(i)));
