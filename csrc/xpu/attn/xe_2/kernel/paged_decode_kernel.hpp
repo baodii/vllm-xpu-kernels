@@ -330,8 +330,6 @@ class XeFMHAFwdSplitKVKernel {
       auto ptrMax_logits = p.max_logits + offset_max_logits;
 
       auto layout_q = make_ordered_layout(shape_Q, Step<_1, _0, _2, _3>{});
-      auto layout_k = make_ordered_layout(shape_K, Step<_2, _0, _1, _3>{});
-      auto layout_v = make_ordered_layout(shape_V, Step<_0, _2, _1, _3>{});
 
       auto layout_o = make_ordered_layout(shape_O, Step<_1, _0, _2, _3, _4>{});
       auto layout_exp_sums =
@@ -341,8 +339,8 @@ class XeFMHAFwdSplitKVKernel {
       auto layout_sink = make_ordered_layout(shape_sink, Step<_1, _0>{});
 
       Tensor Q = make_tensor(make_gmem_ptr(dcQ), layout_q);
-      Tensor K = make_tensor(make_gmem_ptr(dcK), layout_k);
-      Tensor V = make_tensor(make_gmem_ptr(dcV), layout_v);
+      Tensor K = make_tensor(make_gmem_ptr(dcK), make_layout(shape_K, p.dK));
+      Tensor V = make_tensor(make_gmem_ptr(dcV), make_layout(shape_V, p.dV));
       Tensor O = make_tensor(make_gmem_ptr(ptrO), layout_o);
       Tensor exp_sums =
           make_tensor(make_gmem_ptr(ptrExp_sums), layout_exp_sums);
