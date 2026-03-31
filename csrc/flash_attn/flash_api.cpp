@@ -81,7 +81,8 @@ std::vector<at::Tensor> mha_varlen_fwd(
     const float softcap,
     const bool return_softmax,
     std::optional<at::Generator> gen_,
-    std::optional<int> num_splits) {
+    std::optional<int> num_splits,
+    bool pv_fp32) {
   auto q_type = q.scalar_type();
   auto k_type = k.scalar_type();
   TORCH_CHECK(
@@ -242,7 +243,8 @@ std::vector<at::Tensor> mha_varlen_fwd(
         false,  // is_causal: always false for decode; see comment above
         is_local,
         is_sink,
-        num_kv_splits);
+        num_kv_splits,
+        pv_fp32);
   }
 
   if (return_softmax) {
@@ -267,7 +269,7 @@ TORCH_LIBRARY_EXPAND(TORCH_EXTENSION_NAME, ops) {
       "float softmax_scale, Tensor? softmax_sink, bool zero_tensors, "
       "bool is_causal, int window_size_left, int window_size_right, float "
       "softcap, bool return_softmax, "
-      "Generator? gen, int? num_splits) -> Tensor[]");
+      "Generator? gen, int? num_splits, bool pv_fp32=False) -> Tensor[]");
   ops.impl(
       "varlen_fwd",
       torch::kXPU,

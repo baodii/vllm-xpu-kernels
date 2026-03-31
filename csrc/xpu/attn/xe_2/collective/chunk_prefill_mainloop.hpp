@@ -687,6 +687,8 @@ struct DecodeFwdMainloop<
     // Local Mask
     int window_size_left;
     int window_size_right;
+    // Use fp32 PV GEMM (sub-group shuffles) instead of bf16 DPAS
+    bool pv_fp32 = false;
   };
 
   // Kernel-facing parameters
@@ -716,7 +718,8 @@ struct DecodeFwdMainloop<
         args.max_pages_per_seq,
         args.total_seqlen_kv,
         args.window_size_left,
-        args.window_size_right};
+        args.window_size_right,
+        args.pv_fp32};
   }
 
   CUTLASS_HOST_DEVICE static bool can_implement(Arguments const&) {
@@ -950,21 +953,49 @@ struct DecodeFwdMainloop<
 
       /* Apply softmax and scaling */
       softmax(K == 0, tSrS, tA_max, tA_sum, tArA);
-      reorder(tSrS, tArP);
 
-      /* GEMM 2: A += P * V, split in v dimension */
-      CUTLASS_PRAGMA_UNROLL
-      for (int VV = 0; VV < VTiles; VV++) {
-        copy(copy_v, tVgV_cache(_, _, _, VV), tVrV);
-        reorder(tVrV, tArV);
-        if constexpr (Fp8KV) {
+      if (params.pv_fp32) {
+        /* fp32 PV GEMM via sub-group shuffles — no bf16 truncation of P */
+        auto sg = get_sub_group();
+        constexpr int kSgSize = intel::sg_size;
+
+        CUTLASS_PRAGMA_UNROLL
+        for (int VV = 0; VV < VTiles; VV++) {
+          copy(copy_v, tVgV_cache(_, _, _, VV), tVrV);
+
           CUTLASS_PRAGMA_UNROLL
-          for (int i = 0; i < tArV.size(); ++i) {
-            tArV(i) =
-                static_cast<ElementQ>(scale_v * static_cast<float>(tArV(i)));
+          for (int m = 0; m < tSrS.size(); m++) {
+            float p_m = tSrS(m);
+            float dot = 0.0f;
+            CUTLASS_PRAGMA_UNROLL
+            for (int k = 0; k < kSgSize; k++) {
+              float p_m_k = sycl::select_from_group(sg, p_m, k);
+              float v_k = static_cast<float>(tVrV(k));
+              if constexpr (Fp8KV) {
+                v_k *= scale_v;
+              }
+              dot += p_m_k * v_k;
+            }
+            tArA(m + VV * tSrS.size()) += dot;
           }
         }
-        cute::gemm(mma_pv, tArP, tArV, tArA(_, _, _, VV));
+      } else {
+        /* Original bf16 DPAS PV GEMM */
+        reorder(tSrS, tArP);
+
+        CUTLASS_PRAGMA_UNROLL
+        for (int VV = 0; VV < VTiles; VV++) {
+          copy(copy_v, tVgV_cache(_, _, _, VV), tVrV);
+          reorder(tVrV, tArV);
+          if constexpr (Fp8KV) {
+            CUTLASS_PRAGMA_UNROLL
+            for (int i = 0; i < tArV.size(); ++i) {
+              tArV(i) =
+                  static_cast<ElementQ>(scale_v * static_cast<float>(tArV(i)));
+            }
+          }
+          cute::gemm(mma_pv, tArP, tArV, tArA(_, _, _, VV));
+        }
       }
 
       barrier();

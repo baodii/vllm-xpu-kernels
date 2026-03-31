@@ -48,4 +48,5 @@ void cutlass_paged_decode_interface(
     bool is_causal,
     bool is_local,
     bool is_sink,
-    int num_kv_splits);
+    int num_kv_splits,
+    bool pv_fp32 = false);

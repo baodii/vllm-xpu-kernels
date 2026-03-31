@@ -87,7 +87,8 @@ void cutlass_paged_decode_interface(
     bool is_causal,
     bool is_local,
     bool is_sink,
-    int num_kv_splits) {
+    int num_kv_splits,
+    bool pv_fp32) {
   if (vllm::xpu::is_xe2_arch()) {
 #ifdef VLLM_XPU_ENABLE_XE2
     // Use XE2 cutlass kernel
@@ -116,7 +117,8 @@ void cutlass_paged_decode_interface(
         is_causal,
         is_local,
         is_sink,
-        num_kv_splits);
+        num_kv_splits,
+        pv_fp32);
 #else
     TORCH_CHECK(false, "XE2 cutlass kernel is not enabled in this build.");
 #endif

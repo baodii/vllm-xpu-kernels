@@ -30,7 +30,8 @@ void cutlass_paged_decode_xe2(
     bool is_causal,
     bool is_local,
     bool is_sink,
-    int num_kv_splits) {
+    int num_kv_splits,
+    bool pv_fp32) {
   cutlass_paged_decode_impl(
       queue,
       query,
@@ -56,7 +57,8 @@ void cutlass_paged_decode_xe2(
       is_causal,
       is_local,
       is_sink,
-      num_kv_splits);
+      num_kv_splits,
+      pv_fp32);
 }
 
 void cutlass_paged_decode_impl(
@@ -85,7 +87,8 @@ void cutlass_paged_decode_impl(
     bool is_causal,
     bool is_local,
     bool is_sink,
-    int num_kv_splits) {
+    int num_kv_splits,
+    bool pv_fp32) {
   bool is_fp8_kv = key_cache.scalar_type() == at::ScalarType::Float8_e5m2 ||
                    key_cache.scalar_type() == at::ScalarType::Float8_e4m3fn;
   if (is_fp8_kv) {
@@ -173,7 +176,8 @@ void cutlass_paged_decode_impl(
       is_causal,
       is_local,
       is_sink,
-      num_kv_splits};
+      num_kv_splits,
+      pv_fp32};
 
   CutlassQKType cuQKType = aten_to_Cutlass_qk_dtype(query, key_cache);
 

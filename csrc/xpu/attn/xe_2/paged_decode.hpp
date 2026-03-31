@@ -79,6 +79,7 @@ struct paged_decode_args_t {
   bool is_local = false;
   bool is_sink = false;
   int num_kv_splits = 1;
+  bool pv_fp32 = false;
 };
 
 template <class FMHAKernel, class ReductionSplitKernel, bool isVarLen>
@@ -206,7 +207,8 @@ struct DecodeKernelLauncher {
          args.max_blocks_per_seq,
          args.total_seqlen_k,
          args.window_size_left,
-         args.window_size_right},
+         args.window_size_right,
+         args.pv_fp32},
         {},
         hw_info,
         args.num_kv_splits};

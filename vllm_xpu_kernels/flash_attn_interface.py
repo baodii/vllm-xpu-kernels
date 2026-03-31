@@ -52,6 +52,8 @@ def flash_attn_varlen_func(
     fa_version: int = DEFAULT_FA_VERSION,
     s_aux: Optional[torch.Tensor] = None,
     num_splits_kv: Optional[int] = None,
+    # Use fp32 PV GEMM (sub-group shuffles) instead of bf16 DPAS
+    pv_fp32: bool = False,
 ):
     """
     FlashAttention interface for variable-length sequences, with optional
@@ -150,6 +152,7 @@ def flash_attn_varlen_func(
             return_softmax_lse and dropout_p > 0,
             None,
             num_splits_kv,
+            pv_fp32,
         )
     else:
         raise NotImplementedError("not support yet")
