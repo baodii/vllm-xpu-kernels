@@ -63,6 +63,10 @@ static inline void barrier() {
 
 using namespace cute;
 
+// Forward declaration (defined after DecodeFwdMainloop)
+template <typename SGLayoutQK>
+CUTLASS_HOST_DEVICE constexpr auto get_sg_layout_pv(SGLayoutQK const&);
+
 /////////////////////////////////////////////////////////////////////////////////////////////////
 
 template <
@@ -641,6 +645,19 @@ struct DecodeFwdMainloop<
 
   // TODO: static_asserts on TiledMMAPV here...
 
+  // TF32 MMA for pv_fp32 path: avoids bf16 truncation of softmax output.
+  // Uses XE_DPAS_TT<M, float, tfloat32_t> which has hardware TF32 DPAS
+  // support with 10-bit mantissa (vs bf16's 7-bit).
+  static constexpr int kMMAAtomM =
+      decltype(get<0>(typename TiledMMAPV::Shape_MNK{}))::value;
+  using MMAOperationTF32 = XE_DPAS_TT<kMMAAtomM, float, tfloat32_t>;
+  using SubgroupLayoutPV =
+      decltype(get_sg_layout_pv(SubgroupLayoutQK{}));
+  using TiledMMAPV_TF32 = typename TiledMMAHelper<
+      MMA_Atom<MMAOperationTF32>,
+      Layout<TileShapePV>,
+      SubgroupLayoutPV>::TiledMMA;
+
   //
   // Accumulator types
   //
@@ -815,6 +832,14 @@ struct DecodeFwdMainloop<
     auto tVrV = thr_copy_v.partition_sg_fragment_D(gV_split(_, _, 0, 0));
     auto tArV = thr_mma_pv.partition_sg_fragment_B(gV_split(_, _, 0, 0));
 
+    /* TF32 MMA fragments for pv_fp32 path */
+    TiledMMAPV_TF32 mma_pv_tf32{};
+    auto thr_mma_pv_tf32 = mma_pv_tf32.get_slice(thr_id);
+    auto tArP_tf32 =
+        thr_mma_pv_tf32.partition_sg_fragment_A(cP);
+    auto tArV_tf32 =
+        thr_mma_pv_tf32.partition_sg_fragment_B(gV_split(_, _, 0, 0));
+
     /* Create TiledCopy objects for prefetches */
     auto prefetch_q = make_block_2d_prefetch(copy_q);
     auto prefetch_k = make_block_2d_prefetch(copy_k);
@@ -955,29 +980,26 @@ struct DecodeFwdMainloop<
       softmax(K == 0, tSrS, tA_max, tA_sum, tArA);
 
       if (params.pv_fp32) {
-        /* fp32 PV GEMM via sub-group shuffles — no bf16 truncation of P */
-        auto sg = get_sub_group();
-        constexpr int kSgSize = intel::sg_size;
+        /* TF32 PV GEMM via TF32 DPAS — avoids bf16 truncation of P.
+         * Converts softmax output (float) and V (bf16) to tfloat32,
+         * then uses hardware TF32 DPAS for the P*V matrix multiply.
+         * TF32 has 10-bit mantissa vs bf16's 7-bit, giving ~8x
+         * better precision while still using hardware acceleration. */
+        reorder(tSrS, tArP_tf32);
 
         CUTLASS_PRAGMA_UNROLL
         for (int VV = 0; VV < VTiles; VV++) {
           copy(copy_v, tVgV_cache(_, _, _, VV), tVrV);
-
-          CUTLASS_PRAGMA_UNROLL
-          for (int m = 0; m < tSrS.size(); m++) {
-            float p_m = tSrS(m);
-            float dot = 0.0f;
+          reorder(tVrV, tArV_tf32);
+          if constexpr (Fp8KV) {
             CUTLASS_PRAGMA_UNROLL
-            for (int k = 0; k < kSgSize; k++) {
-              float p_m_k = sycl::select_from_group(sg, p_m, k);
-              float v_k = static_cast<float>(tVrV(k));
-              if constexpr (Fp8KV) {
-                v_k *= scale_v;
-              }
-              dot += p_m_k * v_k;
+            for (int i = 0; i < tArV_tf32.size(); ++i) {
+              tArV_tf32(i) = static_cast<tfloat32_t>(
+                  scale_v * static_cast<float>(tArV_tf32(i)));
             }
-            tArA(m + VV * tSrS.size()) += dot;
           }
+          cute::gemm(mma_pv_tf32, tArP_tf32, tArV_tf32,
+                     tArA(_, _, _, VV));
         }
       } else {
         /* Original bf16 DPAS PV GEMM */

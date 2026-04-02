@@ -436,7 +436,8 @@ def test_decode_with_paged_kv(
                                     k_descale=k_descale,
                                     v_descale=v_descale,
                                     window_size=window_size,
-                                    s_aux=sink)
+                                    s_aux=sink,
+                                    pv_fp32=True)
 
     ref_output = ref_paged_attn(query=query,
                                 key_cache=maybe_quantized_key_cache,
@@ -462,3 +463,19 @@ def test_decode_with_paged_kv(
     torch.testing.assert_close(output, ref_output, atol=atol, rtol=rtol), \
         f"{torch.max(torch.abs(output - ref_output))}"
     torch.xpu.empty_cache()
+
+if __name__ == "__main__":
+    test_decode_with_paged_kv(
+        seq_lens=[(1, 1025), (1, 523), (1, 37)],
+        num_heads=(8, 2),
+        head_size=128,
+        dtype=torch.bfloat16,
+        block_size=64,
+        soft_cap=None,
+        num_blocks=64,
+        fa_version=2,
+        q_dtype=None,
+        is_sink=False,
+        fp8_dtype=None,
+        window_size=(-1, -1),
+    )

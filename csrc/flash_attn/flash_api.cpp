@@ -83,6 +83,7 @@ std::vector<at::Tensor> mha_varlen_fwd(
     std::optional<at::Generator> gen_,
     std::optional<int> num_splits,
     bool pv_fp32) {
+  pv_fp32 = true;
   auto q_type = q.scalar_type();
   auto k_type = k.scalar_type();
   TORCH_CHECK(
